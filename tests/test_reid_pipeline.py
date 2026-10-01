@@ -29,15 +29,16 @@ def test_full_pipeline_cli(tmp_path):
     res = []
     for d in dirs:
         assert evaluate.main(["--templates", d, "--split", str(split), "--data", str(ds), "--out", str(tmp_path / "res"),
-                              "--device", "cpu"]) == 0
+                              "--device", "cpu", "--no-per-subset"]) == 0
     base = tmp_path / "res"
     res = sorted(base.glob("debug_colorgrid__*/v1"))
+    assert len(list(base.glob("debug_colorgrid__*/v1__plain"))) == 0   # only with --plain
     assert len(res) == 2
     for r in res:
         text = (r / "report.md").read_text()
-        for needle in ("## Headline", "### delta position", "## Heatmaps", "## Per video", "## Failures"):
+        for needle in ("## TAR at fixed FAR", "### delta position", "## Heatmaps", "## Per site", "## Per video", "## Failures", "## ROC"):
             assert needle in text
-        assert (r / "figures" / "curve_delta_azimuth.png").exists() and (r / "heatmap_delta_position_x_delta_azimuth.png").exists()
+        assert (r / "figures" / "curve_delta_azimuth.png").exists() and (r / "figures" / "heatmap_delta_position_x_delta_azimuth__tar_0.1pct.png").exists()
     # the report can be rebuilt from the saved files alone
     (res[0] / "report.md").unlink()
     assert evaluate.main(["--report-only", str(res[0])]) == 0 and (res[0] / "report.md").exists()
@@ -63,3 +64,4 @@ def test_run_full_eval_one_command(tmp_path, capsys):
     reports = list((tmp_path / "r").glob("debug_colorgrid__*/v1/report.md"))
     assert len(reports) == 1 and "DONE" in capsys.readouterr().out
     assert run_full_eval.main(args) == 0  # re-run: split reused, templates skipped
+    assert len(list((tmp_path / "r").glob("debug_colorgrid__*/v1__plain/report.md"))) == 1   # both variants by default

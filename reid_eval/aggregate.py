@@ -1,31 +1,38 @@
-"""Aggregation of per-video accumulators into bins, heatmaps, per-video / per-object tables and CIs (spec section 8).
+"""Aggregation of per-video accumulators into bins, heatmaps, ROC, per-video / per-site / per-object tables and CIs.
 
 Four aggregation versions are produced for every bin:
   pooled          sum of histograms/counts over videos (every pair counts equally)
   balanced        sum of the object-balanced histograms (every object / object pair counts equally)  <- main score
   video_averaged  metric per video, then mean over videos with enough pairs in that bin
-  bin_balanced    mean of TAR@t over the supported delta-position bins
-Confidence intervals: percentile bootstrap over VIDEOS only (pairs and crops are never resampled), recomputed from
-the per-video accumulators; the same resample counts are used for every table so results are consistent.
+  bin_balanced    mean of TAR@FAR over the supported delta-position bins
+Confidence intervals: percentile bootstrap over VIDEOS only (pairs and crops are never resampled), recomputed from the
+per-video summaries. They are only computed when at least MIN_VIDEOS_FOR_CI videos are aggregated (a single video, or a
+site with 2 videos, has no meaningful video-level bootstrap).
+
+Every aggregation works on a list of `VideoSummary`, so the same code gives the global result, one site, or one video.
 """
 from __future__ import annotations
 
 import itertools
 import json
-from pathlib import Path
+import warnings
 
 import numpy as np
 import pandas as pd
 
 from . import metrics as M
-from .bins import AXES, Bins, N_HIST
+from .bins import AXES, Bins, N_FINE
 
 HEATMAPS = (("delta_position", "delta_azimuth"), ("delta_position", "keypoint_iou"),
             ("delta_azimuth", "keypoint_iou"), ("occlusion", "keypoint_iou"))
-CI_METRICS = ("tar_t2", "tar_t3", "far_t2", "far_t3", "auc", "eer")
+AXIS_KEEPS = [(a,) for a in range(4)]
+HEAT_KEEPS = [(AXES.index(a), AXES.index(b)) for a, b in HEATMAPS]
+PACK_KEEPS = [()] + AXIS_KEEPS + HEAT_KEEPS          # reduced packs stored per video (small)
+FULL = (0, 1, 2, 3)                                  # all joint cells (pooled only: cells.csv)
+MIN_VIDEOS_FOR_CI = 5
 
 
-# ------------------------------------------------------------------ loading / packs
+# ------------------------------------------------------------------ packs
 def load_acc(path):
     with np.load(path, allow_pickle=False) as z:
         d = {k: z[k] for k in z.files}
@@ -37,8 +44,8 @@ def cells_pack(acc, bins: Bins):
     """Dense pack over all joint cells (leading dim n_cells)."""
     NC, ids = bins.n_cells, acc["cell_ids"]
 
-    def dense(a, dtype=np.float64):
-        out = np.zeros((NC,) + a.shape[1:], dtype)
+    def dense(a):
+        out = np.zeros((NC,) + a.shape[1:], np.float64)
         out[ids] = a
         return out
     return {"h": dense(acc["hist"]), "hb": dense(acc["hist_bal"]), "cnt": dense(acc["cnt"]), "cntb": dense(acc["cnt_bal"]),
@@ -50,10 +57,7 @@ def reduce_pack(cells, bins: Bins, keep):
     """Sum joint cells over every axis not in `keep` (tuple of axis indices, ascending). Leading dims = kept axes."""
     shape = bins.cell_shape
     drop = tuple(a for a in range(4) if a not in keep)
-    out = {}
-    for k, v in cells.items():
-        out[k] = v.reshape(shape + v.shape[1:]).sum(axis=drop)
-    return out
+    return {k: v.reshape(shape + v.shape[1:]).sum(axis=drop) for k, v in cells.items()}
 
 
 def add_packs(a, b):
@@ -87,6 +91,38 @@ def objects_support(acc, bins: Bins, keep):
     return n_pos.reshape(sel_shape), n_neg.reshape(sel_shape)
 
 
+class VideoSummary:
+    """Everything the aggregation needs from one video; the big per-cell arrays are reduced and dropped."""
+
+    def __init__(self, acc, bins: Bins, cells):
+        self.meta = acc["meta"]
+        self.video_id = acc["meta"]["video_id"]
+        self.site = acc["meta"].get("site") or "unknown"
+        self.n_crops, self.n_objects = int(acc["n_crops"]), int(acc["n_objects"])
+        self.tracklet_ids = acc["tracklet_ids"]
+        self.packs = {k: reduce_pack(cells, bins, k) for k in PACK_KEEPS}
+        self.objs = {k: objects_support(acc, bins, k) for k in PACK_KEEPS + [FULL]}
+        for k in ("fine", "fine_bal", "kpmin_hist", "kpmin_cnt", "pair_a", "pair_b", "pair_med", "pair_max", "obj_n",
+                  "obj_tar_num", "obj_tar_den", "obj_low_sim", "obj_low_uid", "thresholds"):
+            setattr(self, k, acc[k])
+        self.fail = {k: v for k, v in acc.items() if k.startswith("fail_")}
+
+
+def load_summaries(paths, bins: Bins, thresholds: dict):
+    """Returns (list of VideoSummary, pooled dense cells pack)."""
+    out, pooled = [], None
+    for p in paths:
+        acc = load_acc(p)
+        if not np.allclose(acc["thresholds"], thresholds["thresholds"]):
+            raise ValueError(f"{acc['meta']['video_id']}: accumulated with other thresholds than thresholds.json")
+        if str(acc["bins_sha256"]) != bins.sha256:
+            raise ValueError(f"{acc['meta']['video_id']}: accumulated with a different bins file")
+        cells = cells_pack(acc, bins)
+        out.append(VideoSummary(acc, bins, cells))
+        pooled = add_packs(pooled, cells)
+    return out, pooled
+
+
 # ------------------------------------------------------------------ bootstrap
 def bootstrap_counts(V, B, seed):
     rng = np.random.default_rng(seed)
@@ -99,92 +135,89 @@ def resample_pack(stacked, counts):
 
 def ci(x, level):
     lo, hi = (1 - level) / 2 * 100, (1 + level) / 2 * 100
-    with np.errstate(all="ignore"):
-        import warnings
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)
-            return np.nanpercentile(x, [lo, hi], axis=0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        return np.nanpercentile(x, [lo, hi], axis=0)
 
 
 def named(m, bins: Bins):
-    """Rename tar_q0 -> tar_t2 etc."""
+    """Rename tar_q0 -> tar_at_0.1pct etc."""
     out = dict(m)
     for q, t in enumerate(bins.thr_names):
         for base in ("tar", "far", "frr"):
-            out[f"{base}_{t}"] = out.pop(f"{base}_q{q}")
+            out[f"{base}_at_{t}"] = out.pop(f"{base}_q{q}")
     return out
 
 
 def video_avg(per_video_metrics, gate, counts=None):
     """Mean over videos where `gate` holds. per_video_metrics: (V, ...) ; counts (B, V) resample weights or None."""
     x = np.where(gate, per_video_metrics, np.nan)
-    if counts is None:
-        with np.errstate(all="ignore"):
-            valid = ~np.isnan(x)
-            return np.nansum(x, 0) / np.where(valid.sum(0) > 0, valid.sum(0), np.nan), valid.sum(0)
     valid = (~np.isnan(x)).astype(np.float64)
+    if counts is None:
+        n = valid.sum(0)
+        with np.errstate(all="ignore"):
+            return np.nansum(x, 0) / np.where(n > 0, n, np.nan), n.astype(int)
     num = np.tensordot(counts, np.nan_to_num(x), axes=(1, 0))
     den = np.tensordot(counts, valid, axes=(1, 0))
     with np.errstate(all="ignore"):
         return np.where(den > 0, num / np.where(den > 0, den, 1), np.nan)
 
 
+def metric_names(bins: Bins):
+    return ([f"tar_at_{n}" for n in bins.thr_names] + [f"far_at_{n}" for n in bins.thr_names] + ["auc", "eer"])
+
+
 # ------------------------------------------------------------------ tables
 def bin_table(bins: Bins, keep, pooled, stacked=None, counts=None, n_obj_pos=None, n_obj_neg=None):
     """One row per bin (or per bin combination when len(keep) > 1). Returns a DataFrame."""
-    ft = bins.far_targets[0]
+    ft = bins.best_far
     mp, mb = named(M.compute(pooled, False, ft), bins), named(M.compute(pooled, True, ft), bins)
     shape = mp["n_pos"].shape
-    cols = {}
-    base = ["tar_t2", "tar_t3", "far_t2", "far_t3", "frr_t2", "frr_t3", "auc", "eer", "best_tar_far", "dprime",
-            "pos_mean", "pos_median", "pos_p5", "pos_p95", "neg_mean", "neg_median", "neg_p5", "neg_p95"]
+    names = bins.thr_names
+    base = ([f"{b}_at_{n}" for b in ("tar", "far", "frr") for n in names]
+            + ["auc", "eer", "best_tar_far", "dprime", "pos_mean", "pos_median", "pos_p5", "pos_p95",
+               "neg_mean", "neg_median", "neg_p5", "neg_p95"])
+    cols = {"n_pos": mp["n_pos"], "n_neg": mp["n_neg"], "balanced_n_pos": mb["n_pos"], "balanced_n_neg": mb["n_neg"]}
     for pre, m in (("pooled", mp), ("balanced", mb)):
         for k in base:
             cols[f"{pre}_{k}"] = m[k]
-    cols["balanced_n_pos"], cols["balanced_n_neg"] = mb["n_pos"], mb["n_neg"]
-    cols["n_pos"], cols["n_neg"] = mp["n_pos"], mp["n_neg"]
     if n_obj_pos is not None:
         cols["n_objects"], cols["n_object_pairs"] = n_obj_pos.reshape(shape), n_obj_neg.reshape(shape)
-        sup = (mp["n_pos"] >= bins.min_pos_pairs) & (n_obj_pos.reshape(shape) >= bins.min_objects)
+        cols["supported"] = (mp["n_pos"] >= bins.min_pos_pairs) & (n_obj_pos.reshape(shape) >= bins.min_objects)
     else:
-        sup = mp["n_pos"] >= bins.min_pos_pairs
-    cols["supported"] = sup
+        cols["supported"] = mp["n_pos"] >= bins.min_pos_pairs
     if stacked is not None:
         pv = named(M.compute(stacked, False, ft), bins)  # (V, *shape)
         gate = (pv["n_pos"] >= bins.vavg_pos) & (pv["n_neg"] >= bins.vavg_neg)
-        for k in ("tar_t2", "tar_t3", "far_t2", "far_t3", "auc", "eer"):
+        for k in metric_names(bins):
             cols[f"video_avg_{k}"], nv = video_avg(pv[k], gate)
         cols["video_avg_n_videos"] = nv
         if counts is not None:
             rs = resample_pack(stacked, counts)
             for pre, bal in (("pooled", False), ("balanced", True)):
                 rm = named(M.compute(rs, bal, ft), bins)
-                for k in CI_METRICS:
-                    lo, hi = ci(rm[k], bins.boot_level)
-                    cols[f"{pre}_{k}_lo"], cols[f"{pre}_{k}_hi"] = lo, hi
-            for k in ("tar_t2", "tar_t3", "auc"):
-                lo, hi = ci(video_avg(pv[k], gate, counts), bins.boot_level)
-                cols[f"video_avg_{k}_lo"], cols[f"video_avg_{k}_hi"] = lo, hi
+                for k in metric_names(bins):
+                    cols[f"{pre}_{k}_lo"], cols[f"{pre}_{k}_hi"] = ci(rm[k], bins.boot_level)
+            for k in [f"tar_at_{n}" for n in names] + ["auc"]:
+                cols[f"video_avg_{k}_lo"], cols[f"video_avg_{k}_hi"] = ci(video_avg(pv[k], gate, counts), bins.boot_level)
     if keep:
         labels = [bins.labels(AXES[a]) for a in keep]
         rows = list(itertools.product(*[range(len(l)) for l in labels]))  # C order = reshape(-1) order of the metrics
         df = pd.DataFrame({f"bin_{AXES[a]}": [labels[n][r[n]] for r in rows] for n, a in enumerate(keep)})
     else:
         df = pd.DataFrame({"bin": ["all"]})
-    for k, v in cols.items():
-        df[k] = np.asarray(v).reshape(-1)
-    return df
+    return pd.concat([df, pd.DataFrame({k: np.asarray(v).reshape(-1) for k, v in cols.items()})], axis=1)
 
 
-def kpmin_table(bins: Bins, accs):
+def kpmin_table(bins: Bins, summaries):
     """Secondary keypoint breakdown (plain only): by min visible keypoints of the two crops."""
-    h = sum(a["kpmin_hist"].astype(np.float64) for a in accs)
-    cnt = sum(a["kpmin_cnt"].astype(np.float64) for a in accs)
+    h = sum(s.kpmin_hist.astype(np.float64) for s in summaries)
+    cnt = sum(s.kpmin_cnt.astype(np.float64) for s in summaries)
     p, n = h[:, 0], h[:, 1]
     df = pd.DataFrame({"bin_min_visible_keypoints": bins.labels("min_visible_keypoints"), "n_pos": p.sum(1), "n_neg": n.sum(1)})
     for q, t in enumerate(bins.thr_names):
-        df[f"tar_{t}"] = M._div(cnt[:, 0, q], p.sum(1))
-        df[f"far_{t}"] = M._div(cnt[:, 1, q], n.sum(1))
+        df[f"tar_at_{t}"] = M._div(cnt[:, 0, q], p.sum(1))
+        df[f"far_at_{t}"] = M._div(cnt[:, 1, q], n.sum(1))
     df["auc"], df["eer"] = M.auc(p, n), M.eer(p, n)
     df["supported"] = df["n_pos"] >= bins.min_pos_pairs
     return df
@@ -192,140 +225,171 @@ def kpmin_table(bins: Bins, accs):
 
 # ------------------------------------------------------------------ the whole thing
 class Aggregation:
-    """Reads per-video accumulators (test videos) and computes every table of the results folder."""
+    """Aggregates a list of VideoSummary: all test videos, the videos of one site, or a single video."""
 
-    def __init__(self, acc_paths, bins: Bins, thresholds: dict):
-        self.bins, self.thresholds = bins, thresholds
-        self.accs = [load_acc(p) for p in acc_paths]
-        assert self.accs, "no accumulators to aggregate"
-        for a in self.accs:
-            if not np.allclose(a["thresholds"], thresholds["thresholds"]):
-                raise ValueError(f"{a['meta']['video_id']}: accumulated with other thresholds than thresholds.json")
-            if str(a["bins_sha256"]) != bins.sha256:
-                raise ValueError(f"{a['meta']['video_id']}: accumulated with a different bins file")
-        self.V = len(self.accs)
-        self.counts = bootstrap_counts(self.V, bins.boot_resamples, bins.boot_seed)
-        cells = [cells_pack(a, bins) for a in self.accs]
-        self.pooled_cells = None
-        for c in cells:
-            self.pooled_cells = add_packs(self.pooled_cells, c)
-        self.cells_per_video = cells
-        self._tables = {}
+    def __init__(self, summaries, bins: Bins, thresholds: dict, pooled_cells=None):
+        assert summaries, "nothing to aggregate"
+        self.s, self.bins, self.thresholds, self.pooled_cells = list(summaries), bins, thresholds, pooled_cells
+        self.V = len(self.s)
+        self.use_ci = self.V >= MIN_VIDEOS_FOR_CI
+        self.counts = bootstrap_counts(self.V, bins.boot_resamples, bins.boot_seed) if self.use_ci else None
+        self._cache = {}
 
-    # --- one table for a set of axes
+    def pooled(self, keep):
+        return add_all([s.packs[keep] for s in self.s])
+
+    def stacked(self, keep):
+        return stack_packs([s.packs[keep] for s in self.s])
+
+    def objects(self, keep):
+        return (sum(s.objs[keep][0] for s in self.s), sum(s.objs[keep][1] for s in self.s))
+
     def table(self, keep, ci_=True):
-        key = (tuple(keep), ci_)
-        if key in self._tables:
-            return self._tables[key]
-        pooled = reduce_pack(self.pooled_cells, self.bins, keep)
-        stacked = stack_packs([reduce_pack(c, self.bins, keep) for c in self.cells_per_video]) if ci_ else None
-        op = on = None
-        for a in self.accs:
-            p, n = objects_support(a, self.bins, keep)
-            op = p if op is None else op + p
-            on = n if on is None else on + n
-        df = bin_table(self.bins, keep, pooled, stacked, self.counts if ci_ else None, op, on)
-        self._tables[key] = df
-        return df
+        keep = tuple(keep)
+        ci_ = ci_ and self.use_ci
+        key = (keep, ci_)
+        if key not in self._cache:
+            pooled = self.pooled_cells if keep == FULL else self.pooled(keep)
+            stacked = self.stacked(keep) if (ci_ and keep != FULL) else None
+            op, on = self.objects(keep)
+            self._cache[key] = bin_table(self.bins, keep, pooled, stacked, self.counts if ci_ else None, op, on)
+        return self._cache[key]
 
     def axis_tables(self):
         return {AXES[a]: self.table((a,)) for a in range(4)}
 
     def heatmap_tables(self):
-        return {(a, b): self.table((AXES.index(a), AXES.index(b)), ci_=False) for a, b in HEATMAPS}
+        return {(a, b): self.table(k, ci_=False) for (a, b), k in zip(HEATMAPS, HEAT_KEEPS)}
 
     def cells_table(self):
-        return self.table((0, 1, 2, 3), ci_=False)
+        return self.table(FULL, ci_=False)
 
     # --- headline numbers (four aggregation versions) with CIs
     def headline(self):
-        g = self.table(())
-        row = g.iloc[0]
+        row = self.table(()).iloc[0]
+        names = self.bins.thr_names
         out = {"object_balanced": {}, "pooled": {}, "video_averaged": {}}
-        for k in CI_METRICS + ("best_tar_far", "dprime", "frr_t2", "frr_t3"):
+        for k in metric_names(self.bins) + ["best_tar_far", "dprime"] + [f"frr_at_{n}" for n in names]:
             for name, pre in (("object_balanced", "balanced"), ("pooled", "pooled")):
                 e = {"value": float(row[f"{pre}_{k}"])}
                 if f"{pre}_{k}_lo" in row:
                     e["ci_lo"], e["ci_hi"] = float(row[f"{pre}_{k}_lo"]), float(row[f"{pre}_{k}_hi"])
                 out[name][k] = e
-        for k in ("tar_t2", "tar_t3", "far_t2", "far_t3", "auc", "eer"):
-            e = {"value": float(row[f"video_avg_{k}"])}
-            if f"video_avg_{k}_lo" in row:
-                e["ci_lo"], e["ci_hi"] = float(row[f"video_avg_{k}_lo"]), float(row[f"video_avg_{k}_hi"])
-            out["video_averaged"][k] = e
-        out["video_averaged"]["n_videos_used"] = int(row["video_avg_n_videos"])
+        if "video_avg_n_videos" in row:
+            for k in metric_names(self.bins):
+                e = {"value": float(row[f"video_avg_{k}"])}
+                if f"video_avg_{k}_lo" in row:
+                    e["ci_lo"], e["ci_hi"] = float(row[f"video_avg_{k}_lo"]), float(row[f"video_avg_{k}_hi"])
+                out["video_averaged"][k] = e
+            out["video_averaged"]["n_videos_used"] = int(row["video_avg_n_videos"])
         out["bin_balanced"] = self.bin_balanced()
         out["support"] = {k: (int(row[k]) if k in row else None) for k in ("n_pos", "n_neg", "n_objects", "n_object_pairs")}
-        out["far_targets"] = {t: ft for t, ft in zip(self.bins.thr_names, self.bins.far_targets)}
+        out["far_targets"] = dict(zip(names, self.bins.far_targets))
         return out
 
     def bin_balanced(self):
-        """Mean of TAR@t over the supported, known delta-position bins (pooled and object-balanced), with bootstrap CI."""
+        """Mean of TAR@FAR over the supported, known delta-position bins (pooled and object-balanced), CI if available."""
         df = self.table((0,))
         P = self.bins.n_known[0]
         use = df["supported"].to_numpy()[:P]
         res = {"bins_used": [l for l, u in zip(self.bins.labels("delta_position")[:P], use) if u]}
         if not use.any():
             return res
-        stacked = stack_packs([reduce_pack(c, self.bins, (0,)) for c in self.cells_per_video])
-        rs = resample_pack(stacked, self.counts)
+        rs = None
+        if self.use_ci:
+            rs = resample_pack(self.stacked((0,)), self.counts)
         for name, bal in (("pooled", False), ("object_balanced", True)):
-            m = named(M.compute(rs, bal, self.bins.far_targets[0]), self.bins)
+            pre = "balanced" if bal else "pooled"
+            m = named(M.compute(rs, bal, self.bins.best_far), self.bins) if rs is not None else None
             for t in self.bins.thr_names:
-                pre = "balanced" if bal else "pooled"
-                val = float(np.nanmean(df[f"{pre}_tar_{t}"].to_numpy()[:P][use]))
-                lo, hi = ci(np.nanmean(m[f"tar_{t}"][:, :P][:, use], axis=1), self.bins.boot_level)
-                res.setdefault(name, {})[f"tar_{t}"] = {"value": val, "ci_lo": float(lo), "ci_hi": float(hi)}
+                e = {"value": float(np.nanmean(df[f"{pre}_tar_at_{t}"].to_numpy()[:P][use]))}
+                if m is not None:
+                    e["ci_lo"], e["ci_hi"] = (float(x) for x in ci(np.nanmean(m[f"tar_at_{t}"][:, :P][:, use], axis=1), self.bins.boot_level))
+                res.setdefault(name, {})[f"tar_at_{t}"] = e
         return res
 
-    # --- per video / per object
+    # --- ROC (from the 2,000-bin fine histograms)
+    def roc(self):
+        fine = sum(s.fine.astype(np.float64) for s in self.s)
+        fineb = sum(s.fine_bal for s in self.s)
+        far_p, tar_p = M.roc(fine[0], fine[1])
+        far_b, tar_b = M.roc(fineb[0], fineb[1])
+        return pd.DataFrame({"threshold": np.linspace(-1, 1, N_FINE + 1), "far_pooled": far_p, "tar_pooled": tar_p,
+                             "far_balanced": far_b, "tar_balanced": tar_b})
+
+    # --- per video / per site / per object
+    def _summary_row(self, summaries):
+        """One-line summary of a group of videos (a video or a site) from its global pack."""
+        agg = Aggregation(summaries, self.bins, self.thresholds)
+        t = agg.table(()).iloc[0]
+        names = self.bins.thr_names
+        row = {"n_videos": len(summaries), "n_objects": int(sum(s.n_objects for s in summaries)),
+               "n_crops": int(sum(s.n_crops for s in summaries)), "n_pos": int(t["n_pos"]), "n_neg": int(t["n_neg"]),
+               "auc": t["pooled_auc"], "eer": t["pooled_eer"]}
+        for n in names:
+            row[f"tar_at_{n}"] = t[f"pooled_tar_at_{n}"]
+            if f"balanced_tar_at_{n}_lo" in t:
+                row[f"balanced_tar_at_{n}"] = t[f"balanced_tar_at_{n}"]
+                row[f"balanced_tar_at_{n}_lo"], row[f"balanced_tar_at_{n}_hi"] = t[f"balanced_tar_at_{n}_lo"], t[f"balanced_tar_at_{n}_hi"]
+            else:
+                row[f"balanced_tar_at_{n}"] = t[f"balanced_tar_at_{n}"]
+        for n in names:
+            row[f"far_at_{n}"] = t[f"pooled_far_at_{n}"]
+        thr = self.thresholds["thresholds"][self.bins.strict_idx]
+        row["confused_object_pairs"] = int(sum((s.pair_med > thr).sum() for s in summaries))
+        row["n_object_pairs"] = int(sum(len(s.pair_med) for s in summaries))
+        return row
+
     def per_video(self):
-        ft = self.bins.far_targets[0]
         rows = []
-        t3 = self.thresholds["thresholds"][-1]
-        for a, c in zip(self.accs, self.cells_per_video):
-            pk = reduce_pack(c, self.bins, ())
-            m = named(M.compute(pk, False, ft), self.bins)
-            mb = named(M.compute(pk, True, ft), self.bins)
-            meta = a["meta"]
-            rows.append({
-                "video_id": meta["video_id"], "site": meta.get("site"), "pov": meta.get("pov"),
-                "n_objects": int(a["n_objects"]), "n_crops": int(a["n_crops"]),
-                "n_pos": int(m["n_pos"]), "n_neg": int(m["n_neg"]),
-                "auc": float(m["auc"]), "eer": float(m["eer"]),
-                "tar_t2": float(m["tar_t2"]), "tar_t3": float(m["tar_t3"]),
-                "far_t2": float(m["far_t2"]), "far_t3": float(m["far_t3"]),
-                "balanced_tar_t3": float(mb["tar_t3"]),
-                "confused_object_pairs": int((a["pair_med"] > t3).sum()), "n_object_pairs": int(len(a["pair_med"])),
-            })
+        for s in self.s:
+            rows.append({"video_id": s.video_id, "site": s.site, "pov": s.meta.get("pov"), **self._summary_row([s])})
+        return pd.DataFrame(rows).drop(columns=["n_videos"])
+
+    def per_site(self):
+        rows = []
+        for site in sorted({s.site for s in self.s}):
+            sub = [s for s in self.s if s.site == site]
+            rows.append({"site": site, **self._summary_row(sub)})
         return pd.DataFrame(rows)
 
     def per_object(self):
-        t3 = self.thresholds["thresholds"][-1]
+        thr = self.thresholds["thresholds"][self.bins.strict_idx]
+        n = self.bins.strict_name
         P1 = self.bins.cell_shape[0]
         pos_labels = self.bins.labels("delta_position")
         rows = []
-        for a in self.accs:
-            T = int(a["n_objects"])
+        for s in self.s:
+            T = s.n_objects
             hi_neg = np.full(T, -np.inf)
             nfalse = np.zeros(T, np.int64)
-            for x, y, mx in zip(a["pair_a"], a["pair_b"], a["pair_max"]):
+            for x, y, mx in zip(s.pair_a, s.pair_b, s.pair_max):
                 hi_neg[x] = max(hi_neg[x], mx); hi_neg[y] = max(hi_neg[y], mx)
-                if mx >= t3:
+                if mx >= thr:
                     nfalse[x] += 1; nfalse[y] += 1
-            tar = np.divide(a["obj_tar_num"][-1], a["obj_tar_den"], out=np.full((T, P1), np.nan), where=a["obj_tar_den"] > 0)
+            tar = np.divide(s.obj_tar_num[self.bins.strict_idx], s.obj_tar_den, out=np.full((T, P1), np.nan), where=s.obj_tar_den > 0)
             for t in range(T):
-                low = a["obj_low_sim"][t]
-                r = {"video_id": a["meta"]["video_id"], "tracklet_id": str(a["tracklet_ids"][t]), "n_crops": int(a["obj_n"][t]),
+                low = s.obj_low_sim[t]
+                r = {"video_id": s.video_id, "tracklet_id": str(s.tracklet_ids[t]), "n_crops": int(s.obj_n[t]),
                      "lowest_positive_sim": None if np.isnan(low) else float(low),
-                     "lowest_positive_crop_a": str(a["obj_low_uid"][t, 0]), "lowest_positive_crop_b": str(a["obj_low_uid"][t, 1]),
-                     "n_other_objects_falsely_matched_t3": int(nfalse[t]),
+                     "lowest_positive_crop_a": str(s.obj_low_uid[t, 0]), "lowest_positive_crop_b": str(s.obj_low_uid[t, 1]),
+                     f"n_other_objects_falsely_matched_at_{n}": int(nfalse[t]),
                      "highest_negative_sim": None if np.isinf(hi_neg[t]) else float(hi_neg[t]),
                      "margin": None if (np.isnan(low) or np.isinf(hi_neg[t])) else float(low - hi_neg[t])}
                 for k, lab in enumerate(pos_labels):
-                    r[f"tar_t3_dpos{lab}"] = None if np.isnan(tar[t, k]) else float(tar[t, k])
+                    r[f"tar_at_{n}_dpos{lab}"] = None if np.isnan(tar[t, k]) else float(tar[t, k])
                 rows.append(r)
         return pd.DataFrame(rows)
 
     def kpmin(self):
-        return kpmin_table(self.bins, self.accs)
+        return kpmin_table(self.bins, self.s)
+
+    def has_keypoints(self):
+        return any(s.meta.get("keypoints_present") for s in self.s)
+
+
+def add_all(packs):
+    out = None
+    for p in packs:
+        out = add_packs(out, p)
+    return out

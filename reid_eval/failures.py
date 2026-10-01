@@ -15,16 +15,19 @@ import pandas as pd
 def collect(accs, kind, n=200):
     """kind: 'neg' (highest sims first) or 'pos' (lowest first). Returns a DataFrame of the n worst pairs over all videos."""
     rows = []
-    for a in accs:
-        f = a[f"fail_{kind}"]
+    for a in accs:  # VideoSummary
+        F = a.fail
+        f = F[f"fail_{kind}"]
         for k in range(len(f)):
-            rows.append({"similarity": float(f[k, 0]), "video_id": a["meta"]["video_id"],
-                         "tracklet_a": str(a[f"fail_{kind}_trk"][k, 0]), "tracklet_b": str(a[f"fail_{kind}_trk"][k, 1]),
-                         "crop_a": str(a[f"fail_{kind}_uid"][k, 0]), "crop_b": str(a[f"fail_{kind}_uid"][k, 1]),
-                         "frame_a": int(a[f"fail_{kind}_frame"][k, 0]), "frame_b": int(a[f"fail_{kind}_frame"][k, 1]),
-                         "delta_position_m": float(a[f"fail_{kind}_dpos"][k])})
-    df = pd.DataFrame(rows)
+            rows.append({"similarity": float(f[k, 0]), "video_id": a.video_id,
+                         "tracklet_a": str(F[f"fail_{kind}_trk"][k, 0]), "tracklet_b": str(F[f"fail_{kind}_trk"][k, 1]),
+                         "crop_a": str(F[f"fail_{kind}_uid"][k, 0]), "crop_b": str(F[f"fail_{kind}_uid"][k, 1]),
+                         "frame_a": int(F[f"fail_{kind}_frame"][k, 0]), "frame_b": int(F[f"fail_{kind}_frame"][k, 1]),
+                         "delta_position_m": float(F[f"fail_{kind}_dpos"][k])})
+    cols = ["similarity", "video_id", "tracklet_a", "tracklet_b", "crop_a", "crop_b", "frame_a", "frame_b", "delta_position_m"]
+    df = pd.DataFrame(rows, columns=cols)   # keeps the header when there is nothing (e.g. no position known -> no near positives)
     if df.empty:
+        df.insert(0, "rank", [])
         return df
     df = df.sort_values("similarity", ascending=(kind == "pos"), kind="stable").head(n).reset_index(drop=True)
     df.insert(0, "rank", np.arange(1, len(df) + 1))
