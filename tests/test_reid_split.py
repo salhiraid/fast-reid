@@ -40,3 +40,23 @@ def test_loud_warning_when_too_few(ds, tmp_path, capsys):
     main(["--data", str(ds), "--n-val", "4", "--n-test", "500", "--out", str(tmp_path / "s.json")])
     assert "WARNING" in capsys.readouterr().err
     assert json.loads((tmp_path / "s.json").read_text())["warnings"]
+
+
+def test_rebuilding_summary_does_not_invalidate_split_but_changed_crops_do(ds, tmp_path):
+    """build_reid_crops.py rewrites summary.json on every run; only a change of the KEPT crops must block reuse."""
+    import extract_templates
+    split = tmp_path / "s.json"
+    main(["--data", str(ds), "--n-val", "4", "--n-test", "6", "--out", str(split)])
+    args = ["--model", "debug_colorgrid", "--split", str(split), "--data", str(ds), "--out", str(tmp_path / "t"),
+            "--num-workers", "0", "--preproc", "letterbox"]
+    (ds / "summary.json").write_text(json.dumps({"videos": [{"id": "x", "status": "skipped_exists"}]}))   # a resumed build
+    assert extract_templates.main(args) == 0
+    s = json.loads(split.read_text())
+    assert set(s["crops_fingerprint_sha256"]) == {"validation", "test"}
+    vid = s["test"][0]                                   # quality_filter.py drops one kept crop in place
+    p = ds / "videos" / vid / "meta.json"
+    m = json.loads(p.read_text())
+    m["tracks"][0]["crops"].pop(); m["n_crops"] -= 1; m["tracks"][0]["n_crops"] -= 1
+    p.write_text(json.dumps(m))
+    with pytest.raises(SystemExit, match="changed since split"):
+        extract_templates.main(args + ["--overwrite"])

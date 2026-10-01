@@ -18,6 +18,7 @@ from reid_data import load_dataset, group_by_video
 from reid_eval.common import read_json, sha256_file, write_json_atomic
 from reid_eval.encoders import available_encoders, build_encoder
 from reid_eval.preprocess import MODES
+from reid_eval.split import check_fingerprints
 from reid_eval.templates import SETS, check_alignment, load_video_npz, save_video_npz, template_dir, video_file
 
 COMPAT_KEYS = ("model_name", "checkpoint_sha256", "preproc_mode", "input_size", "flip_tta", "split_sha256", "batch_size", "embedding_dim")
@@ -111,7 +112,8 @@ def main(argv=None):
     split_sha = sha256_file(a.split)
     summary = Path(a.data) / "summary.json"
     if split.get("dataset_summary_sha256") and summary.is_file() and sha256_file(summary) != split["dataset_summary_sha256"]:
-        sys.exit(f"{summary} changed since the split was made. Create eval_split_v2.json for the new dataset; never reuse v1.")
+        print(f"note: {summary} differs from the one at split time (build_reid_crops.py rewrites it on every run); "
+              f"the real check is the kept-crop fingerprint below", file=sys.stderr)
     if str(Path(split["dataset_root"])) != str(Path(a.data)):
         print(f"note: split was made on {split['dataset_root']}, extracting from {a.data}", file=sys.stderr)
 
@@ -125,6 +127,10 @@ def main(argv=None):
     ids = sorted({v for s in a.sets for v in split[s]})
     records = load_dataset(a.data, video_ids=ids)
     by_video = group_by_video(records)
+    try:
+        check_fingerprints(split, by_video, a.sets)
+    except ValueError as e:
+        sys.exit(str(e))
 
     for mode in a.preproc:
         tdir = template_dir(a.out, a.model, mode)

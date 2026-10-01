@@ -15,6 +15,7 @@ from .aggregate import AXES, Aggregation, HEATMAPS
 from .bins import N_FINE, Bins
 from .common import read_json, sha256_file, write_json_atomic
 from .failures import collect, contact_sheets
+from .split import check_fingerprints
 from .templates import SETS, check_alignment, load_video_npz, video_file
 
 
@@ -113,6 +114,7 @@ def run(template_dir, split_path, data_root, bins_path, out_base, device=None, v
     ids = sorted(set(split["validation"]) | set(split["test"]))
     records, infos = load_dataset_with_info(data_root, ids, verbose=verbose)
     by_video = group_by_video(records)
+    check_fingerprints(split, by_video, SETS)
 
     out = Path(out_base) / f"{manifest['model_name']}__{manifest['preproc_mode']}" / split["version"]
     out.mkdir(parents=True, exist_ok=True)

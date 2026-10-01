@@ -24,6 +24,7 @@ def make_fake_dataset(root, n_videos=6, n_sites=3, tracklets=(3, 5), crops=(4, 9
         folder = root / "videos" / vid
         (folder / "crops").mkdir(parents=True, exist_ok=True)
         n_tr = int(rng.randint(tracklets[0], tracklets[1] + 1))
+        calibrated = not (calibration_every and v % calibration_every == calibration_every - 1)
         tracks, rejected = [], []
         for t in range(1, n_tr + 1):
             colour = rng.randint(30, 255, size=3)
@@ -41,35 +42,41 @@ def make_fake_dataset(root, n_videos=6, n_sites=3, tracklets=(3, 5), crops=(4, 9
                 img[py:py + h, px:px + w] = body
                 rel = f"crops/{t:05d}/{frame:06d}.jpg"
                 cv2.imwrite(str(folder / rel), img)
-                reliable = bool(rng.rand() > 0.1)
+                reliable = calibrated and bool(rng.rand() > 0.1)
                 heading = rng.uniform(-180, 180)
                 clist.append({
-                    "crop_file": rel.replace("/", "\\") if windows_paths and k % 2 else rel,
+                    "crop_file": rel.replace("/", "\\") if windows_paths == "all" or (windows_paths and k % 2) else rel,
                     "frame": frame, "timestamp_s": frame / 30.0,
                     "bbox_xyxy": [0, 0, w, h], "bbox_wh": [w, h],
                     "crop_transform": {"scale_x": 1.0, "scale_y": 1.0, "pad_x": px, "pad_y": py, "crop_box_px": [0, 0, w, h]},
                     "position_road_m": [x0 + vx * k, y0 + vy * k, 0.0] if reliable else None,
-                    "position_cam_m": [0.0, 0.0, 10.0], "distance_m": 10.0 if reliable else None,
-                    "position_reliable": reliable,
-                    "view_azimuth_deg": float(heading) if rng.rand() > 0.05 else None,
-                    "view_bin": "front", "occluded_annot": bool(rng.rand() < 0.05),
-                    "overlap_by_closer_box": float(rng.rand() * 0.5),
-                    "quality": {"brightness": 100.0, "flags": []}, "blur_laplacian_var": 50.0,
+                    "position_cam_m": [0.0, 0.0, 10.0] if calibrated else None, "distance_m": 10.0 if reliable else None,
+                    "position_reliable": reliable, "anno_frame": frame, "keyframe": k % 3 == 0, "keyframe_gap": k % 3,
+                    "is_truncated": False, "truncated": {"left": False, "top": False, "right": False, "bottom": False},
+                    "occluded_annot": bool(rng.rand() < 0.05), "overlap_by_closer_box": float(rng.rand() * 0.5),
+                    "ignore_region_overlap": 0.0, "source_frame": frame,
+                    "quality": {"brightness": 100.0, "contrast": 40.0, "sharpness_224": 80.0, "sharpness_rel": 1.0,
+                                "flags": None},  # build_reid_crops.py writes flags: null when nothing is flagged
+                    "blur_laplacian_var": 50.0,
                 })
+                if calibrated:  # without calibration build_reid_crops.py writes no view_* / heading keys at all
+                    clist[-1].update(view_azimuth_deg=float(heading) if rng.rand() > 0.05 else None, view_bin="front",
+                                     heading_deg=0.0, speed_mps=5.0, view_elevation_deg=20.0)
                 if keypoints:  # fake keypoints in the planned format (coordinates in the 224 crop)
                     vis = (rng.rand(keypoints) < 0.6).tolist()
                     clist[-1]["keypoints"] = {"schema": "fake", "points": rng.uniform(0, 224, size=(keypoints, 3)).tolist(),
                                               "visible": vis, "visibility_threshold": 0.5}
-            tracks.append({"track_id": t, "tracklet_id": f"{vid}_{t}", "identity_id": f"{vid}_{t}", "label": "car",
+            tracks.append({"track_id": t, "tracklet_id": f"{vid}_{t}", "identity_id": f"{vid}_{t}", "label": "car", "source": "manual", "n_boxes": n_c,
                            "first_frame": 15, "last_frame": 15 * n_c, "n_crops": n_c, "crops": clist})
             # a rejected crop that must never be read
             (folder / "rejected" / f"{t:05d}").mkdir(parents=True, exist_ok=True)
             cv2.imwrite(str(folder / "rejected" / f"{t:05d}" / "000001.jpg"), np.full((224, 224, 3), 255, np.uint8))
-            rejected.append({"crop_file": f"rejected/{t:05d}/000001.jpg", "reasons": ["blur"]})
+            rejected.append({"crop_file": f"rejected\\{t:05d}\\000001.jpg", "reasons": ["blur_rel"], "frame": 1,
+                             "track_id": t, "tracklet_id": f"{vid}_{t}", "label": "car"})
         n_crops = sum(len(tr["crops"]) for tr in tracks)
-        calibrated = not (calibration_every and v % calibration_every == calibration_every - 1)
         meta = {"video_id": vid, "site": f"site{v % n_sites}", "country": "XX", "orient": "A", "pov": "front" if v % 2 else "rear",
-                "time": "day", "fps": 30.0, "calibration": {"available": calibrated},
+                "time": "day", "fps": 30.0, "calibration": {"available": True, "road_side": "verge", "camera_dir": "approach", "side_coef": 0.75}
+                                       if calibrated else {"available": False},
                 "crop_params": {"size": 224, "resize_mode": "letterbox", "effective_fps": 5.0},
                 "quality_params": None, "n_tracks": n_tr, "n_crops": n_crops, "tracks": tracks, "rejected_crops": rejected}
         (folder / "meta.json").write_text(json.dumps(meta))
