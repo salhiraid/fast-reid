@@ -1,0 +1,111 @@
+# Vehicle ReID: dataset loader, templates and within-video verification evaluation
+
+Adds, on top of FastReID, everything needed to (1) load the crop dataset, (2) encode the validation/test videos into saved
+embeddings ("templates") with any model behind one interface, and (3) run a within-video verification evaluation with
+difficulty bins. The dataset is read-only; nothing here writes under `--data`.
+
+```
+reid_data/loader.py          CropRecord loader (kept crops from meta.json only)
+make_split.py                frozen validation/test split         -> splits/eval_split_v1.json
+reid_eval/encoders/          registry + FastReID wrapper + CLIP-ReID wrapper (+ debug encoder)
+extract_templates.py         encode once, one .npz per video       -> templates/<model>__<mode>/
+validate_encoder.py          wrapper check (VeRi-776 mAP, or same-vs-different tracklet pairs)
+evaluate.py                  thresholds on validation, metrics on test -> results/<model>__<mode>/<split>/
+compare_models.py            paired bootstrap between two evaluated models
+configs/bins_v1.yaml         bin edges, FAR targets, minimum support, bootstrap settings
+tests/test_reid_*.py         synthetic tests (no real data or weights needed)
+```
+
+## Run order
+
+```bash
+D=D:/data/Re-ID_safe_test                      # dataset root
+
+# 1. split (once; refuses to overwrite; --check re-derives and compares)
+python make_split.py --data $D --out splits/eval_split_v1.json
+
+# 2. validate the wrapper (published number within ~1 mAP, or same-tracklet > different-vehicle)
+python validate_encoder.py --model fastreid_veriwild_r50ibn --weights veriwild_bot_R50-ibn.pth --data $D --split splits/eval_split_v1.json
+
+# 3. templates, both preprocessing modes (validation is enough to choose the mode)
+python extract_templates.py --model fastreid_veriwild_r50ibn --weights veriwild_bot_R50-ibn.pth \
+    --split splits/eval_split_v1.json --data $D --out templates/ --preproc letterbox unpad_stretch
+
+# 4. choose the preprocessing mode on VALIDATION (higher pooled AUC), then evaluate that mode
+python evaluate.py --choose-mode templates/fastreid_veriwild_r50ibn__letterbox templates/fastreid_veriwild_r50ibn__unpad_stretch \
+    --split splits/eval_split_v1.json --data $D --out results/
+python evaluate.py --templates templates/fastreid_veriwild_r50ibn__unpad_stretch --split splits/eval_split_v1.json \
+    --data $D --bins configs/bins_v1.yaml --out results/
+
+# 5. rebuild report.md from the saved files only
+python evaluate.py --report-only results/fastreid_veriwild_r50ibn__unpad_stretch/v1 --data $D
+
+# 6. second model + paired comparison
+python compare_models.py --a results/<A>__<mode>/v1 --b results/<B>__<mode>/v1 --out results/compare_A_vs_B_v1
+```
+
+`pytest tests/test_reid_*.py tests/test_validate_encoder.py` runs the synthetic checks (about 1.5 min on CPU).
+
+## Models
+
+`--model` names (see `reid_eval/encoders`): `fastreid_veriwild_r50ibn`, `fastreid_veri_sbs_r50ibn`, `clipreid_vit_veri`,
+`debug_colorgrid` (pipeline tests only). Add a model by writing a class with `name`, `input_size`, `preprocess`, `encode`,
+`describe` and registering it with `@register("<name>")`; extraction and evaluation contain no model-specific code.
+
+* **FastReID**: the feature is `Baseline.forward` in eval mode = `EmbeddingHead` BN-neck feature, the same tensor
+  `ReidEvaluator` uses (`MODEL.HEADS.NECK_FEAT` only selects the *training* feature). Size 256x256 and ImageNet mean/std come from the
+  repo's config; FastReID normalises inside the model (0-255 scale), so `preprocess` returns raw RGB 0-255. Resize is PIL bicubic like
+  the repo's test transform. The checkpoint is loaded **strictly**, `NUM_CLASSES` is read from the checkpoint, no ImageNet weights are
+  downloaded, no AMP. `fastreid.engine` is never imported, so `faiss` is not needed.
+* **CLIP-ReID**: wraps the repo's own `make_model` / `model(img)` with SIE off and camera/view labels `None`; CLIP mean/std. It needs
+  `--clipreid-repo` (or `$CLIPREID_REPO`), `--num-classes` matching the checkpoint, and a checkpoint trained **without** SIE.
+* Licences: weights trained on VeRi-776 / VehicleID / VERI-Wild are research-only. `checkpoint_source` in the manifest is a reminder
+  field to fill in the download URL and licence.
+
+## Output layout
+
+```
+splits/eval_split_v1.json                         frozen; never edit (dataset changed -> eval_split_v2.json)
+templates/<model>__<mode>/manifest.json           model, repo commit, checkpoint sha256, preprocessing, split sha256, notes, throughput
+templates/<model>__<mode>/{validation,test}/<video>.npz    emb (raw, float32), crop_uid, tracklet_id, frame; canonical record order
+results/<model>__<mode>/<split_version>/
+    thresholds.json  summary.json  report.md  figures/  run.json
+    bins_<axis>.csv  heatmap_<a>_x_<b>.csv/.png  cells.csv  per_video.csv  per_object.csv
+    failures/ (negatives_highest_similarity, positives_lowest_similarity_dpos_lt_1m: CSV + contact sheets)
+    acc/{validation,test}/<video>.npz              per-video accumulators; every breakdown is a sum over their joint cells
+```
+
+Per-video accumulator (`acc/...npz`): sparse joint cells `cell_ids` over (delta position, delta azimuth, occlusion, keypoint IoU), each
+with a 200-bin histogram per pair type (plain `hist` and object-balanced `hist_bal`), exact counts at both thresholds (`cnt`,
+`cnt_bal`), first and second moments, a 2,000-bin fine histogram (`fine`, `fine_bal`), distinct objects / object pairs per cell
+(`pos_keys`, `neg_keys`), per-object stats (`obj_*`) and per-object-pair median/max (`pair_*`), plus the worst pairs (`fail_*`).
+
+## Choices the spec left open (check they suit you)
+
+* **Cell count.** The occlusion axis has the 3 bins of the spec table (both visible / one / both occluded), so there are
+  8 x 7 x 3 x 5 = 840 joint cells, not 1,120.
+* **Histogram resolution.** Per-bin AUC, EER, best-TAR, median/p5/p95 come from 200-bin histograms (about 0.01 in cosine, linear
+  interpolation inside a bin); the global AUC and the thresholds use the 2,000-bin histogram. TAR/FAR/FRR at the thresholds are
+  exact counts. The thresholds are interpolated inside a 0.001-wide bin, so on a large validation set the measured validation FAR lands
+  within a few percent (relative) of the target (synthetic check: 1.003e-3 for a 1e-3 target); the FAR actually measured on
+  validation and test is always reported next to the target.
+* **Validation negatives for thresholds** are pooled plain pairs (as in the spec), not object-balanced.
+* **Site-disjoint validation.** Whole sites are added in seeded random order until >= `--n-val` videos, skipping a site that would
+  push validation beyond 1.5x `--n-val`. If that is impossible the split falls back to random videos, sets `site_disjoint: false`
+  and prints a warning (also stored in the split's `warnings`).
+* **Test videos** that are eligible but fewer than 150: all are taken, with a loud warning.
+* **`created` timestamp** in the split file is the only non-deterministic field; two runs with the same seed give identical files
+  apart from it (`--created` fixes it; `--check` compares ignoring it).
+* **Shared-keypoints IoU** is unknown if either crop has no keypoints *or* both have zero visible keypoints (0 / 0).
+* **Objects falsely matched** (per_object.csv) = other objects with at least one negative pair >= t(1e-3). **Confused object pair** =
+  median similarity of the object pair > t(1e-3); medians and maxima are exact.
+* **Bootstrap** is over videos only (percentile CI, seed in `bins_v1.yaml`). The optional second level (resampling objects inside a
+  video) is **not implemented**. Video-averaged CIs are given for TAR and AUC only.
+* **Keypoints**: parsed in one function, `reid_data.loader.parse_keypoints`; a missing field is `None` ("unknown"). The secondary
+  breakdown by minimum visible keypoints is written to `bins_min_visible_keypoints.csv` when keypoints exist.
+
+## Known limitations
+
+See section 10 of the spec: the occlusion axis is almost empty on the default dataset (quality control removes occluded crops),
+the keypoint axis is all "unknown" until keypoints are added, within-video results are optimistic, and tracklet = vehicle is an
+assumption: review `failures/` before trusting any number.

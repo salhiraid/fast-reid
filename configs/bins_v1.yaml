@@ -1,0 +1,21 @@
+# Difficulty-axis bins for the within-video verification evaluation (spec section 8).
+# Edges are lower-inclusive / upper-exclusive; the last bin also includes its upper edge.
+# Checked on validation counts, then FROZEN: change = new file (bins_v2.yaml), never edit v1 after results exist.
+version: v1
+
+delta_position_m: [0, 1, 3, 5, 10, 20, 40, .inf]       # |pos1 - pos2| on position_road_m[:2], reliable positions only
+delta_azimuth_deg: [0, 5, 10, 20, 45, 90, 180]          # |a1 - a2| wrapped to 0..180
+occlusion: [both_visible, one_occluded, both_occluded]  # number of occluded crops in the pair
+shared_keypoints_iou: [0, 0.25, 0.5, 0.75, 1.0]         # visible in both / visible in either
+min_visible_keypoints: [0, 4, 8, 12, 16, .inf]          # secondary keypoint breakdown: min over the two crops
+
+far_targets: [1.0e-2, 1.0e-3]                           # thresholds t(1e-2), t(1e-3) are set on validation negatives
+
+# A bin is reported only with at least this much support; otherwise it is greyed out.
+min_support:
+  positive_pairs: 30
+  objects: 10
+# Video-averaged metrics use only videos with at least this many pairs in the (bin of the) video.
+video_average_min_pairs: {positive: 30, negative: 30}
+
+bootstrap: {resamples: 1000, seed: 0, level: 0.95}

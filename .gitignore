@@ -35,3 +35,7 @@ model_ts*.txt
 .vscode
 _darcs
 .DS_Store
+
+# reid_eval outputs (never commit embeddings/results; the frozen split files in splits/ ARE committed)
+/templates/
+/results/
