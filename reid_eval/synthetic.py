@@ -9,7 +9,7 @@ import numpy as np
 
 
 def make_fake_dataset(root, n_videos=6, n_sites=3, tracklets=(3, 5), crops=(4, 9), seed=0, windows_paths=True,
-                      calibration_every=0):
+                      calibration_every=0, keypoints=0):
     """Build `root/videos/<id>/{meta.json,crops/,rejected/}` + summary.json. Returns {video_id: [tracklet_ids]}.
 
     Each tracklet is a coloured box on black, letterboxed into 224x224. `calibration_every=k` makes every
@@ -56,6 +56,10 @@ def make_fake_dataset(root, n_videos=6, n_sites=3, tracklets=(3, 5), crops=(4, 9
                     "overlap_by_closer_box": float(rng.rand() * 0.5),
                     "quality": {"brightness": 100.0, "flags": []}, "blur_laplacian_var": 50.0,
                 })
+                if keypoints:  # fake keypoints in the planned format (coordinates in the 224 crop)
+                    vis = (rng.rand(keypoints) < 0.6).tolist()
+                    clist[-1]["keypoints"] = {"schema": "fake", "points": rng.uniform(0, 224, size=(keypoints, 3)).tolist(),
+                                              "visible": vis, "visibility_threshold": 0.5}
             tracks.append({"track_id": t, "tracklet_id": f"{vid}_{t}", "identity_id": f"{vid}_{t}", "label": "car",
                            "first_frame": 15, "last_frame": 15 * n_c, "n_crops": n_c, "crops": clist})
             # a rejected crop that must never be read
@@ -73,3 +77,20 @@ def make_fake_dataset(root, n_videos=6, n_sites=3, tracklets=(3, 5), crops=(4, 9
         summary["videos"][vid] = {"status": "ok", "n_crops": n_crops}
     (root / "summary.json").write_text(json.dumps(summary))
     return out
+
+
+def make_fake_templates(tdir, split, by_video, split_sha256, noise=0.0, dim=16, seed=0, model_name="fake", mode="letterbox"):
+    """Templates whose similarities are known: embedding = one-hot(tracklet) + Gaussian noise (std `noise`)."""
+    from .templates import save_video_npz, video_file
+    from .common import write_json_atomic
+    rng = np.random.RandomState(seed)
+    tdir = Path(tdir)
+    for set_name in ("validation", "test"):
+        for vid in split[set_name]:
+            recs = by_video[vid]
+            tids = sorted({r.tracklet_id for r in recs})
+            assert len(tids) <= dim
+            emb = np.stack([np.eye(dim)[tids.index(r.tracklet_id)] for r in recs]) + noise * rng.randn(len(recs), dim)
+            save_video_npz(video_file(tdir, set_name, vid), emb.astype(np.float32), [r.crop_uid for r in recs],
+                           [r.tracklet_id for r in recs], [r.frame for r in recs])
+    write_json_atomic(tdir / "manifest.json", {"model_name": model_name, "preproc_mode": mode, "split_sha256": split_sha256})
