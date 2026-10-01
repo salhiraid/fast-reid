@@ -36,6 +36,12 @@ class VideoMeta:
     def n(self):
         return len(self.trk)
 
+    def neutral(self):
+        """Same crops and objects, but NO pose/occlusion/keypoint information: every pair lands in one 'unknown' cell.
+        Used by the plain evaluation, which must not depend on calibration-derived metadata."""
+        return VideoMeta(self.tracklet_ids, self.trk, np.zeros_like(self.pos), np.zeros_like(self.pos_ok),
+                         np.full_like(self.az, np.nan), np.zeros_like(self.occ), None, None)
+
     @classmethod
     def from_records(cls, records):
         tids, trk = [], np.empty(len(records), np.int64)
@@ -124,7 +130,8 @@ def fine_histograms(emb, meta, device=None, block_pairs=1 << 24):
     return out.view(2, N_FINE).cpu().numpy()
 
 
-def accumulate_video(emb, meta: VideoMeta, bins: Bins, thresholds, device=None, block_pairs=1 << 24, n_fail=200):
+def accumulate_video(emb, meta: VideoMeta, bins: Bins, thresholds, device=None, block_pairs=1 << 24, n_fail=200,
+                     fail_pos_all=False):
     """Return the per-video accumulator dict (see module docstring and README_reid_eval.md for the layout)."""
     dev, E, trk, T, counts, starts = _prep(emb, meta, device)
     N = len(E)
@@ -244,8 +251,8 @@ def accumulate_video(emb, meta: VideoMeta, bins: Bins, thresholds, device=None, 
                 ic, jc = i[isp][sel].cpu().numpy(), j[isp][sel].cpu().numpy()
                 better = vals < low_s[objs]
                 low_s[objs[better]], low_i[objs[better]], low_j[objs[better]] = vals[better], ic[better], jc[better]
-                # failure candidates: lowest positives with delta position < 1 m (first known bin)
-                near = pbp == 0
+                # failure candidates: lowest positives with delta position < 1 m (first known bin), or all positives (plain eval)
+                near = torch.ones_like(pbp, dtype=torch.bool) if fail_pos_all else pbp == 0
                 if near.any():
                     fpos = merge_top(fpos, sp[near], i[isp][near], j[isp][near], False)
             if is_neg.any():

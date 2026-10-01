@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 """Whole pipeline for one model in one command (cross-platform):
 split (created once, reused if it exists) -> templates for both preprocessing modes -> choose the mode on VALIDATION
--> evaluate the chosen mode -> report.md.
+-> evaluate the chosen mode TWICE: "full" (all difficulty criteria: delta position / azimuth / occlusion / keypoints) and
+"plain" (no pose criteria, global result) -> report.md for the whole test set, every site and every video.
 
   python run_full_eval.py --data D:/data/Re-ID_safe_test --model fastreid_veriwild_r50ibn --weights veriwild_bot_R50-ibn.pth
 
@@ -24,7 +25,9 @@ def main(argv=None):
     ap.add_argument("--model", required=True)
     ap.add_argument("--weights", default=None)
     ap.add_argument("--split", default="splits/eval_split_v1.json")
-    ap.add_argument("--bins", default="configs/bins_v1.yaml")
+    ap.add_argument("--bins", default="configs/bins_v2.yaml", help="FAR targets 0.1, 1, 2, 5, 10 %%")
+    ap.add_argument("--variants", nargs="+", choices=["full", "plain"], default=["full", "plain"])
+    ap.add_argument("--no-per-subset", action="store_true", help="skip the per-site and per-video reports (faster)")
     ap.add_argument("--templates", default="templates/")
     ap.add_argument("--out", default="results/")
     ap.add_argument("--modes", nargs="+", default=["letterbox", "unpad_stretch"])
@@ -64,10 +67,14 @@ def main(argv=None):
         chosen = read_json(Path(a.out) / f"{a.model}__mode_selection_{read_json(a.split)['version']}.json")["chosen"]
     else:
         chosen = a.modes[0]
-    print(f"[4/4] evaluating {a.model}__{chosen}", file=sys.stderr)
-    evaluate.main(["--templates", str(template_dir(a.templates, a.model, chosen)), "--bins", a.bins, *common])
     v = read_json(a.split)["version"]
-    print(f"\nDONE. Report: {Path(a.out) / f'{a.model}__{chosen}' / v / 'report.md'}")
+    for variant in a.variants:
+        print(f"[4/4] evaluating {a.model}__{chosen} ({variant})", file=sys.stderr)
+        evaluate.main(["--templates", str(template_dir(a.templates, a.model, chosen)), "--bins", a.bins, *common]
+                      + (["--plain"] if variant == "plain" else []) + (["--no-per-subset"] if a.no_per_subset else []))
+    print("\nDONE. Reports:")
+    for variant in a.variants:
+        print("  ", Path(a.out) / f"{a.model}__{chosen}" / (v + ("__plain" if variant == "plain" else "")) / "report.md")
     return 0
 
 

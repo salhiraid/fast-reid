@@ -14,7 +14,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--a", required=True)
     ap.add_argument("--b", required=True)
-    ap.add_argument("--bins", default="configs/bins_v1.yaml")
+    ap.add_argument("--bins", default=None, help="default: the bins file recorded in --a/run.json")
     ap.add_argument("--out", required=True, help="output prefix: writes <out>.csv and <out>.md")
     a = ap.parse_args(argv)
     df, meta = compare(a.a, a.b, a.bins)

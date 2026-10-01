@@ -12,7 +12,7 @@ extract_templates.py         encode once, one .npz per video       -> templates/
 validate_encoder.py          wrapper check (VeRi-776 mAP, or same-vs-different tracklet pairs)
 evaluate.py                  thresholds on validation, metrics on test -> results/<model>__<mode>/<split>/
 compare_models.py            paired bootstrap between two evaluated models
-configs/bins_v1.yaml         bin edges, FAR targets, minimum support, bootstrap settings
+configs/bins_v2.yaml         bin edges, FAR targets (0.1/1/2/5/10 %), minimum support, bootstrap settings (v1: 1 % and 0.1 % only)
 tests/test_reid_*.py         synthetic tests (no real data or weights needed)
 ```
 
@@ -68,7 +68,8 @@ python extract_templates.py --model fastreid_veriwild_r50ibn --weights veriwild_
 python evaluate.py --choose-mode templates/fastreid_veriwild_r50ibn__letterbox templates/fastreid_veriwild_r50ibn__unpad_stretch \
     --split splits/eval_split_v1.json --data $D --out results/
 python evaluate.py --templates templates/fastreid_veriwild_r50ibn__unpad_stretch --split splits/eval_split_v1.json \
-    --data $D --bins configs/bins_v1.yaml --out results/
+    --data $D --bins configs/bins_v2.yaml --out results/
+#    ... add --plain for the evaluation without the difficulty criteria
 
 # 5. rebuild report.md from the saved files only
 python evaluate.py --report-only results/fastreid_veriwild_r50ibn__unpad_stretch/v1 --data $D
@@ -94,6 +95,28 @@ python compare_models.py --a results/<A>__<mode>/v1 --b results/<B>__<mode>/v1 -
   `--clipreid-repo` (or `$CLIPREID_REPO`), `--num-classes` matching the checkpoint, and a checkpoint trained **without** SIE.
 * Licences: weights trained on VeRi-776 / VehicleID / VERI-Wild are research-only. `checkpoint_source` in the manifest is a reminder
   field to fill in the download URL and licence.
+
+## Two evaluations, several FAR points, per site and per video
+
+`run_full_eval.py` runs **two evaluations** on the same templates and the same validation thresholds:
+
+| variant | folder | what it contains |
+|---|---|---|
+| `full` | `results/<model>__<mode>/<split>/` | all difficulty criteria: delta position, delta azimuth, occlusion, keypoints (curves, heatmaps, joint cells) |
+| `plain` | `results/<model>__<mode>/<split>__plain/` | NO pose / occlusion / keypoint criteria: every pair counts; global ROC, TAR at the FAR targets, per site, per video. Computed from neutral metadata, so it does not depend on calibration |
+
+`plain` gives exactly the same global numbers as `full` (tested), because both use the same thresholds; it just does not slice by difficulty.
+To also include videos **without calibration** in the plain evaluation, make a separate split
+(`make_split.py --no-require-calibration --out splits/eval_split_v2.json`) and run that split.
+
+TAR is reported at several FAR operating points (`configs/bins_v2.yaml`): **0.1 %, 1 %, 2 %, 5 %, 10 %** (10^-3 = 0.1 %, 10^-2 = 1 %,
+10^-1 = 10 %, so those requests coincide). Every threshold is set on the pooled validation negatives; the FAR actually measured on test is
+shown next to each target. Column names: `tar_at_0.1pct`, `far_at_1pct`, ... Change the list in a new `bins_v3.yaml`, never in v2.
+
+The **same figures and tables are produced for every site and every video**: `per_site/<site>/` and `per_video/<video_id>/`
+each hold `report.md`, `summary.json`, `roc.csv`, `figures/` (ROC, 4 difficulty curves, heatmaps) and `bins_*.csv`; the main report links
+to them from its per-site and per-video tables. Bootstrap CIs need at least 5 videos, so they exist globally and for large sites only;
+single videos have none, and most of their bins fall below the minimum support (greyed). `--no-per-subset` skips these reports (faster).
 
 ## Output layout
 
@@ -132,7 +155,7 @@ with a 200-bin histogram per pair type (plain `hist` and object-balanced `hist_b
 * **Shared-keypoints IoU** is unknown if either crop has no keypoints *or* both have zero visible keypoints (0 / 0).
 * **Objects falsely matched** (per_object.csv) = other objects with at least one negative pair >= t(1e-3). **Confused object pair** =
   median similarity of the object pair > t(1e-3); medians and maxima are exact.
-* **Bootstrap** is over videos only (percentile CI, seed in `bins_v1.yaml`). The optional second level (resampling objects inside a
+* **Bootstrap** is over videos only (percentile CI, seed in the bins file). The optional second level (resampling objects inside a
   video) is **not implemented**. Video-averaged CIs are given for TAR and AUC only.
 * **Keypoints**: parsed in one function, `reid_data.loader.parse_keypoints`; a missing field is `None` ("unknown"). The secondary
   breakdown by minimum visible keypoints is written to `bins_min_visible_keypoints.csv` when keypoints exist.
