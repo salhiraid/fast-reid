@@ -51,3 +51,15 @@ def test_full_pipeline_cli(tmp_path):
     compare_models.main(["--a", str(res[0]), "--b", str(res[0]), "--out", str(tmp_path / "self")])
     same = pd.read_csv(tmp_path / "self.csv").dropna(subset=["diff_b_minus_a"])
     assert same.diff_b_minus_a.abs().max() == 0 and same.ci_lo.abs().max() == 0 and not same.ci_excludes_0.any()
+
+
+def test_run_full_eval_one_command(tmp_path, capsys):
+    import run_full_eval
+    ds = tmp_path / "d"
+    make_fake_dataset(ds, n_videos=14, n_sites=7, tracklets=(4, 5), crops=(12, 14), seed=9)
+    args = ["--data", str(ds), "--model", "debug_colorgrid", "--split", str(tmp_path / "s.json"), "--templates", str(tmp_path / "t"),
+            "--out", str(tmp_path / "r"), "--n-val", "3", "--n-test", "6", "--num-workers", "0", "--device", "cpu"]
+    assert run_full_eval.main(args) == 0
+    reports = list((tmp_path / "r").glob("debug_colorgrid__*/v1/report.md"))
+    assert len(reports) == 1 and "DONE" in capsys.readouterr().out
+    assert run_full_eval.main(args) == 0  # re-run: split reused, templates skipped
