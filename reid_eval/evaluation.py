@@ -16,6 +16,7 @@ from .aggregate import AXES, Aggregation, HEATMAPS, load_summaries
 from .bins import N_FINE, Bins
 from .common import read_json, sha256_file, write_json_atomic
 from .failures import collect, contact_sheets
+from .matches import object_sheets
 from .split import check_fingerprints
 from .templates import SETS, check_alignment, load_video_npz, video_file
 
@@ -70,11 +71,16 @@ def _strings(a):
     return np.asarray(a, dtype=str) if len(a) else np.zeros((0,), dtype=str)
 
 
-def accumulate_set(tdir, split, set_name, by_video, infos, bins, thresholds, acc_dir, device=None, verbose=True, plain=False):
+def accumulate_set(tdir, split, set_name, by_video, infos, bins, thresholds, acc_dir, device=None, verbose=True, plain=False,
+                   matches_dir=None, match_topk=10):
     paths = []
     for k, vid in enumerate(split[set_name]):
         recs = by_video[vid]
         emb, meta = load_video(tdir, set_name, vid, recs)
+        if matches_dir is not None:  # one image per object with its top positive / negative matches (needs the raw embeddings)
+            j = int(np.argmin([abs(np.log10(t) - np.log10(0.01)) for t in bins.far_targets]))  # flags use the threshold nearest FAR 1 %
+            object_sheets(emb, recs, Path(matches_dir) / _slug(vid, set()), thresholds[j], f"t(FAR {bins.thr_names[j].replace('pct', '%')})",
+                          match_topk, device=device)
         if plain:  # no pose / occlusion / keypoint information at all: one global result per video
             meta = meta.neutral()
         acc = accumulate_video(emb, meta, bins, thresholds, device, fail_pos_all=plain)
@@ -106,9 +112,12 @@ def accumulate_set(tdir, split, set_name, by_video, infos, bins, thresholds, acc
     return paths
 
 
-def run(template_dir, split_path, data_root, bins_path, out_base, device=None, verbose=True, plain=False, per_subset=True):
+def run(template_dir, split_path, data_root, bins_path, out_base, device=None, verbose=True, plain=False, per_subset=True,
+        match_sheets=None, match_topk=10):
     """Full evaluation of one template folder. `plain=True`: no difficulty criteria (pose/occlusion/keypoints), global metrics only.
-    Returns the results folder."""
+    `match_sheets` (default: on for the full variant, off for plain): per-object top-k positive/negative match images of the test
+    videos, in <results>/matches/<video>/. Returns the results folder."""
+    match_sheets = (not plain) if match_sheets is None else match_sheets
     tdir = Path(template_dir)
     manifest = read_json(tdir / "manifest.json")
     split = read_json(split_path)
@@ -133,7 +142,8 @@ def run(template_dir, split_path, data_root, bins_path, out_base, device=None, v
     thr = thresholds["thresholds"]
     acc_dir = out / "acc"
     val_paths = accumulate_set(tdir, split, "validation", by_video, infos, bins, thr, acc_dir, device, verbose, plain)
-    test_paths = accumulate_set(tdir, split, "test", by_video, infos, bins, thr, acc_dir, device, verbose, plain)
+    test_paths = accumulate_set(tdir, split, "test", by_video, infos, bins, thr, acc_dir, device, verbose, plain,
+                                matches_dir=(out / "matches") if match_sheets else None, match_topk=match_topk)
     write_json_atomic(out / "run.json", {"template_dir": str(tdir), "manifest": manifest, "split_file": str(split_path), "kind": kind,
                                          "data_root": str(data_root), "bins_file": str(bins_path), "bins_sha256": bins.sha256})
     write_results(out, bins, thresholds, val_paths, test_paths, data_root, kind=kind, per_subset=per_subset)
@@ -215,8 +225,10 @@ def write_results(out, bins: Bins, thresholds, val_paths, test_paths, data_root=
             build_report_from_dir(sd, data_root)
         for x in test_s:
             vd = out / "per_video" / vid_dirs[x.video_id]
+            mdir = out / "matches" / _slug(x.video_id, set())
             write_subset(Aggregation([x], bins, thresholds), vd, bins, thresholds, kind, f"Video {x.video_id} (site {x.site}): {model} ({kind})",
-                         {"video_id": x.video_id, "site": x.site, "short_title": x.video_id})
+                         {"video_id": x.video_id, "site": x.site, "short_title": x.video_id,
+                          "matches": f"../../matches/{mdir.name}/index.md" if (mdir / "index.md").exists() else None})
             build_report_from_dir(vd, data_root)
             if verbose:
                 print(f"[report] {x.video_id}", file=sys.stderr)
