@@ -16,7 +16,15 @@ configs/bins_v1.yaml         bin edges, FAR targets, minimum support, bootstrap 
 tests/test_reid_*.py         synthetic tests (no real data or weights needed)
 ```
 
-## Run order
+## One command
+
+```bash
+python run_full_eval.py --data D:/data/Re-ID_safe_test --model fastreid_veriwild_r50ibn --weights veriwild_bot_R50-ibn.pth
+```
+
+Runs split (reused if it exists) -> templates for both modes -> mode chosen on validation -> evaluation -> `report.md`; re-running resumes.
+
+## Run order (step by step)
 
 ```bash
 D=D:/data/Re-ID_safe_test                      # dataset root
