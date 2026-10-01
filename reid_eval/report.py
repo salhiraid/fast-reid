@@ -104,6 +104,12 @@ def build_report_from_dir(results_dir, data_root=None):
                 plot_heatmap(df, a, b, fig / png, n)
                 L += [f"![{png}](figures/{png})", ""]
 
+    if s.get("matches"):
+        L += ["## Object matches", "", f"One image per object with its top-10 positive and negative matches: [{s['matches']}]({s['matches']})", ""]
+    elif (out / "matches").is_dir():
+        L += ["## Object matches", "", "One image per object (query = medoid crop) with its top-10 positive and negative matches, per video: "
+              "`matches/<video>/index.md` (images + table, most confusable objects first) and `matches/<video>/index.csv`.", ""]
+
     # ---------------- per site / per video (global report only)
     if (out / "per_site.csv").exists():
         ps = pd.read_csv(out / "per_site.csv")

@@ -33,6 +33,9 @@ def main(argv=None):
     ap.add_argument("--report-only", metavar="RESULTS_DIR")
     ap.add_argument("--plain", action="store_true", help="no difficulty criteria: global / per-site / per-video metrics only")
     ap.add_argument("--no-per-subset", action="store_true", help="skip the per-site and per-video reports (faster)")
+    ap.add_argument("--match-sheets", dest="match_sheets", action="store_true", default=None, help="force per-object match images (default: on for full, off for plain)")
+    ap.add_argument("--no-match-sheets", dest="match_sheets", action="store_false")
+    ap.add_argument("--match-topk", type=int, default=10, help="matches per row in the per-object images")
     ap.add_argument("--no-report", action="store_true")
     a = ap.parse_args(argv)
 
@@ -56,7 +59,8 @@ def main(argv=None):
         return 0
     if not a.templates:
         ap.error("--templates is required")
-    out = evaluation.run(a.templates, a.split, a.data, a.bins, a.out, a.device, plain=a.plain, per_subset=not a.no_per_subset)
+    out = evaluation.run(a.templates, a.split, a.data, a.bins, a.out, a.device, plain=a.plain, per_subset=not a.no_per_subset,
+                         match_sheets=a.match_sheets, match_topk=a.match_topk)
     print(f"results in {out}")
     return 0
 

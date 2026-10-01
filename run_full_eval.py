@@ -28,6 +28,8 @@ def main(argv=None):
     ap.add_argument("--bins", default="configs/bins_v2.yaml", help="FAR targets 0.1, 1, 2, 5, 10 %%")
     ap.add_argument("--variants", nargs="+", choices=["full", "plain"], default=["full", "plain"])
     ap.add_argument("--no-per-subset", action="store_true", help="skip the per-site and per-video reports (faster)")
+    ap.add_argument("--no-match-sheets", action="store_true", help="skip the per-object top-10 match images (faster)")
+    ap.add_argument("--match-topk", type=int, default=10)
     ap.add_argument("--templates", default="templates/")
     ap.add_argument("--out", default="results/")
     ap.add_argument("--modes", nargs="+", default=["letterbox", "unpad_stretch"])
@@ -71,7 +73,8 @@ def main(argv=None):
     for variant in a.variants:
         print(f"[4/4] evaluating {a.model}__{chosen} ({variant})", file=sys.stderr)
         evaluate.main(["--templates", str(template_dir(a.templates, a.model, chosen)), "--bins", a.bins, *common]
-                      + (["--plain"] if variant == "plain" else []) + (["--no-per-subset"] if a.no_per_subset else []))
+                      + (["--plain"] if variant == "plain" else []) + (["--no-per-subset"] if a.no_per_subset else [])
+                      + (["--no-match-sheets"] if a.no_match_sheets else []) + ["--match-topk", str(a.match_topk)])
     print("\nDONE. Reports:")
     for variant in a.variants:
         print("  ", Path(a.out) / f"{a.model}__{chosen}" / (v + ("__plain" if variant == "plain" else "")) / "report.md")

@@ -118,6 +118,18 @@ each hold `report.md`, `summary.json`, `roc.csv`, `figures/` (ROC, 4 difficulty 
 to them from its per-site and per-video tables. Bootstrap CIs need at least 5 videos, so they exist globally and for large sites only;
 single videos have none, and most of their bins fall below the minimum support (greyed). `--no-per-subset` skips these reports (faster).
 
+## Per-object match images (top-10 positives and negatives)
+
+For **every object of every test video** the `full` evaluation writes one image, `results/<model>__<mode>/<split>/matches/<video>/<object>.png`
+(plus `index.csv` and `index.md` per video, objects listed most confusable first; the per-video reports link to them). The query is the
+object's *medoid* crop (the crop most similar, on average, to its other crops). Rows: **top positives** (10 most similar crops of the same
+object), **hardest positives** (10 least similar, only when the object has more than 10 positives), **top negatives** (10 most similar
+crops of other objects, labelled with the other object's id). Each tile shows its cosine similarity and a flag against the global threshold at
+FAR 1 %: positive below it = `FR` (false reject, orange), negative at or above it = `FA` (false accept, red). `index.csv` has, per object,
+the best/worst positive, the top negative and its object, the number of FR/FA of that query and the separation (lowest positive - highest
+negative). It shows one query per object, so it is for understanding failures, not a metric. Options: `--match-topk N`,
+`--no-match-sheets` (skip; faster), `--match-sheets` (also in the plain variant). About 4,000 objects x ~30 crops are read once per video.
+
 ## Output layout
 
 ```

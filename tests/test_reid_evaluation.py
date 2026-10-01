@@ -201,6 +201,14 @@ def test_per_site_and_per_video_have_the_same_outputs(noisy):
     assert one["n_videos"] == 1 and one["has_ci"] is False and "ci_lo" not in one["headline"]["pooled"]["auc"]
     assert "**not computed here" in (out / pv.report.iloc[0]).read_text()
     assert "per_site/" in (out / "report.md").read_text() and "per_video/" in (out / "report.md").read_text()
+    # one top-10 match image per object of every test video, linked from the per-video report
+    po = pd.read_csv(out / "per_object.csv")
+    for vid, grp in po.groupby("video_id"):
+        idx = pd.read_csv(out / "matches" / vid / "index.csv")
+        assert sorted(idx.tracklet_id) == sorted(grp.tracklet_id)
+        assert all((out / "matches" / vid / f).exists() for f in idx.sheet)
+    first = pv.report.iloc[0]
+    assert "matches/" in (out / first).read_text()
 
 
 def test_plain_equals_full_globally_and_ignores_pose_metadata(noisy):
@@ -216,6 +224,7 @@ def test_plain_equals_full_globally_and_ignores_pose_metadata(noisy):
             assert p["headline"][version][k]["value"] == pytest.approx(f["headline"][version][k]["value"], abs=1e-9), (version, k)
     assert read_json(plain / "thresholds.json")["thresholds"] == read_json(out / "thresholds.json")["thresholds"]
     assert not list(plain.glob("bins_*.csv")) and not list(plain.glob("heatmap_*"))        # no difficulty criteria
+    assert not (plain / "matches").exists()                                                 # match images: full variant only (default)
     assert (plain / "per_site.csv").exists() and (plain / "per_video.csv").exists() and (plain / "figures" / "roc.png").exists()
     assert "Difficulty axes" not in (plain / "report.md").read_text()
     pos = pd.read_csv(plain / "failures" / "positives_lowest_similarity.csv")
