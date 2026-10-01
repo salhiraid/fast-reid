@@ -70,8 +70,10 @@ def plot_heatmap(df: pd.DataFrame, a: str, b: str, path, metric="balanced_tar_t3
                 dark = sup[i, j] and not np.isnan(val[i, j]) and val[i, j] > 0.55
                 ax.text(j, i, f"{val[i, j]:.2f}\n{int(npos[i, j]):,}" if not np.isnan(val[i, j]) else f"\n{int(npos[i, j]):,}",
                         ha="center", va="center", fontsize=6.5, color="white" if dark else (INK if sup[i, j] else INK2))
-    ax.set_xticks(range(len(rb)), rb, fontsize=7, rotation=30, ha="right")
-    ax.set_yticks(range(len(ra)), ra, fontsize=7)
+    ax.set_xticks(range(len(rb)))
+    ax.set_xticklabels(rb, fontsize=7, rotation=30, ha="right")
+    ax.set_yticks(range(len(ra)))
+    ax.set_yticklabels(ra, fontsize=7)
     ax.set_xlabel(b.replace("_", " "), fontsize=8, color=INK2)
     ax.set_ylabel(a.replace("_", " "), fontsize=8, color=INK2)
     ax.set_title(f"{title_metric}\ncell: value / positive pairs; grey = below minimum support", fontsize=7.5, loc="left", color=INK)

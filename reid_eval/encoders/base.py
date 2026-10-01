@@ -1,6 +1,15 @@
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+try:  # typing.Protocol is Python >= 3.8
+    from typing import Protocol, runtime_checkable
+except ImportError:  # pragma: no cover
+    try:
+        from typing_extensions import Protocol, runtime_checkable
+    except ImportError:
+        Protocol = object
+
+        def runtime_checkable(cls):
+            return cls
 
 import numpy as np
 import torch

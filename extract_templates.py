@@ -106,7 +106,8 @@ def main(argv=None):
     torch.manual_seed(a.seed); np.random.seed(a.seed)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
-    torch.set_float32_matmul_precision("highest")
+    if hasattr(torch, "set_float32_matmul_precision"):  # torch >= 1.12
+        torch.set_float32_matmul_precision("highest")
 
     split = read_json(a.split)
     split_sha = sha256_file(a.split)

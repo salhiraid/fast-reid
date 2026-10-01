@@ -48,3 +48,31 @@ def test_wrong_config_fails_loudly(fake_ckpt):
 def test_weights_required():
     with pytest.raises(ValueError):
         build_encoder("fastreid_veriwild_r50ibn")
+
+
+def _legacy(fake_ckpt, tmp_path, pixel_mean=None):
+    """Checkpoint in the format of the FastReID model zoo: heads.classifier.weight + stored pixel_mean/pixel_std."""
+    cfg, ref, p = fake_ckpt
+    state = {k: v.clone() for k, v in ref.state_dict().items()}
+    state["heads.classifier.weight"] = state.pop("heads.weight")
+    state["pixel_mean"] = torch.tensor(pixel_mean or cfg.MODEL.PIXEL_MEAN).view(1, -1, 1, 1)
+    state["pixel_std"] = torch.tensor(cfg.MODEL.PIXEL_STD).view(1, -1, 1, 1)
+    out = tmp_path / "legacy.pth"
+    torch.save({"model": state}, out)
+    return out
+
+
+def test_legacy_model_zoo_checkpoint_loads(fake_ckpt, tmp_path):
+    cfg, ref, p = fake_ckpt
+    enc = build_encoder("fastreid_veriwild_r50ibn", weights=str(_legacy(fake_ckpt, tmp_path)), device="cpu")
+    assert any("heads.classifier.weight" in n for n in enc.describe()["notes"])
+    assert any("pixel_mean" in n for n in enc.describe()["notes"])
+    x = enc.preprocess((np.random.RandomState(1).rand(224, 224, 3) * 255).astype(np.uint8), 0, 0, "letterbox")[None]
+    with torch.no_grad():
+        assert torch.allclose(enc.encode(x), ref({"images": x.clone()}), atol=1e-5)   # same features as the current-format load
+
+
+def test_legacy_checkpoint_with_other_normalisation_is_refused(fake_ckpt, tmp_path):
+    bad = _legacy(fake_ckpt, tmp_path, pixel_mean=[0.5 * 255, 0.5 * 255, 0.5 * 255])
+    with pytest.raises(RuntimeError, match="pixel_mean"):
+        build_encoder("fastreid_veriwild_r50ibn", weights=str(bad), device="cpu")
