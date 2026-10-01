@@ -86,8 +86,9 @@ with a 200-bin histogram per pair type (plain `hist` and object-balanced `hist_b
   8 x 7 x 3 x 5 = 840 joint cells, not 1,120.
 * **Histogram resolution.** Per-bin AUC, EER, best-TAR, median/p5/p95 come from 200-bin histograms (about 0.01 in cosine, linear
   interpolation inside a bin); the global AUC and the thresholds use the 2,000-bin histogram. TAR/FAR/FRR at the thresholds are
-  exact counts. The thresholds are interpolated inside a 0.001-wide bin, so the validation FAR matches the target to well under 1%
-  relative on large validation sets.
+  exact counts. The thresholds are interpolated inside a 0.001-wide bin, so on a large validation set the measured validation FAR lands
+  within a few percent (relative) of the target (synthetic check: 1.003e-3 for a 1e-3 target); the FAR actually measured on
+  validation and test is always reported next to the target.
 * **Validation negatives for thresholds** are pooled plain pairs (as in the spec), not object-balanced.
 * **Site-disjoint validation.** Whole sites are added in seeded random order until >= `--n-val` videos, skipping a site that would
   push validation beyond 1.5x `--n-val`. If that is impossible the split falls back to random videos, sets `site_disjoint: false`
