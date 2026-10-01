@@ -40,11 +40,12 @@ def compute_thresholds(tdir, split, by_video, bins: Bins, device=None):
         T = len(meta.tracklet_ids)
         n_obj_pairs += T * (T - 1) // 2
     neg, pos = fine[1], fine[0]
-    thr = [M.threshold_for_far(neg, t) for t in bins.far_targets]
+    thr = [M.threshold_for_far(neg, t) for t in bins.far_targets] + list(bins.fixed_thresholds)   # FAR thresholds, then fixed ones
     if neg.sum() * min(bins.far_targets) < 10:
         print(f"WARNING: only {int(neg.sum())} validation negatives for FAR target {min(bins.far_targets):g}", file=sys.stderr)
     return {
-        "source": "validation", "far_targets": bins.far_targets, "names": bins.thr_names, "thresholds": thr,
+        "source": "validation", "far_targets": bins.far_targets, "fixed_thresholds": bins.fixed_thresholds,
+        "names": bins.op_names, "thresholds": thr,
         "n_negative_pairs": int(neg.sum()), "n_positive_pairs": int(pos.sum()), "n_distinct_object_pairs": int(n_obj_pairs),
         "validation_auc": float(M.auc(pos, neg)), "strict": bins.strict_name,
         "validation_far_at_thresholds": [float(neg[int((t + 1) * N_FINE / 2):].sum() / neg.sum()) for t in thr],
@@ -164,11 +165,11 @@ def write_subset(agg: Aggregation, out, bins: Bins, thresholds, kind, title, ext
     """Tables for one group of videos (all test videos, one site, or one video). The report is built from these files."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
-    names = bins.thr_names
+    names = bins.op_names
     summary = {"title": title, "short_title": extra.get("short_title", "") if extra else "", "kind": kind,
                "model_name": thresholds.get("model_name"), "preproc_mode": thresholds.get("preproc_mode"),
                "split_version": thresholds.get("split_version"), "bins_version": bins.version, "n_videos": agg.V,
-               "videos": [x.video_id for x in agg.s] if agg.V <= 50 else None, "far_names": names, "strict_name": bins.strict_name,
+               "videos": [x.video_id for x in agg.s] if agg.V <= 50 else None, "far_names": bins.thr_names, "fixed_names": bins.fixed_names, "strict_name": bins.strict_name,
                "heat_names": bins.heat_names, "thresholds": dict(zip(names, thresholds["thresholds"])), "has_ci": agg.use_ci,
                "headline": agg.headline(), "bootstrap": {"resamples": bins.boot_resamples, "level": bins.boot_level,
                                                          "unit": "videos", "seed": bins.boot_seed}}
@@ -192,14 +193,14 @@ def write_results(out, bins: Bins, thresholds, val_paths, test_paths, data_root=
     test_s, pooled_cells = load_summaries(test_paths, bins, thresholds)
     val_s, _ = load_summaries(val_paths, bins, thresholds) if val_paths else ([], None)
     agg = Aggregation(test_s, bins, thresholds, pooled_cells)
-    names = bins.thr_names
+    names = bins.op_names
     model = f"{thresholds.get('model_name')} / {thresholds.get('preproc_mode')}"
     summary = write_subset(agg, out, bins, thresholds, kind, f"Verification report ({kind}): {model}",
                            {"short_title": ""})
     if val_s:
         vh = Aggregation(val_s, bins, thresholds).table(()).iloc[0]
         summary["validation"] = {"pooled_auc": float(vh["pooled_auc"]), "pooled_eer": float(vh["pooled_eer"]),
-                                 **{f"pooled_{b}_at_{n}": float(vh[f"pooled_{b}_at_{n}"]) for n in names for b in ("tar", "far")}}
+                                 **{f"pooled_{b}_at_{n}": float(vh[f"pooled_{b}_at_{n}"]) for n in names for b in ("tar", "far", "acc", "bacc")}}
         write_json_atomic(out / "summary.json", summary)
     if kind == "full":
         agg.cells_table().to_csv(out / "cells.csv", index=False)
@@ -245,6 +246,7 @@ def write_results(out, bins: Bins, thresholds, val_paths, test_paths, data_root=
     if verbose:
         h = summary["headline"]["object_balanced"]
         print(f"[{kind}] object-balanced: AUC {h['auc']['value']:.4f}  " +
-              "  ".join(f"TAR@{n} {h[f'tar_at_{n}']['value']:.4f}" for n in sorted(names, key=lambda x: float(x[:-3]))), file=sys.stderr)
+              "  ".join(f"TAR@{n} {h[f'tar_at_{n}']['value']:.4f}" for n in bins.thr_names) +
+              "".join(f"  acc@{n} {h[f'acc_at_{n}']['value']:.4f}" for n in bins.fixed_names), file=sys.stderr)
     build_report_from_dir(out, data_root)
     return summary

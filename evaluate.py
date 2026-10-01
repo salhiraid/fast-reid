@@ -26,7 +26,7 @@ def main(argv=None):
     ap.add_argument("--templates")
     ap.add_argument("--split")
     ap.add_argument("--data")
-    ap.add_argument("--bins", default="configs/bins_v2.yaml", help="bins + FAR targets (v2: 0.1, 1, 2, 5, 10 %%)")
+    ap.add_argument("--bins", default="configs/bins_v3.yaml", help="bins + FAR targets (v2: 0.1, 1, 2, 5, 10 %%)")
     ap.add_argument("--out", default="results/")
     ap.add_argument("--device", default=None)
     ap.add_argument("--choose-mode", nargs="+", metavar="TEMPLATE_DIR")

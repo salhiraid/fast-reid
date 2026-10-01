@@ -141,10 +141,10 @@ def ci(x, level):
 
 
 def named(m, bins: Bins):
-    """Rename tar_q0 -> tar_at_0.1pct etc."""
+    """Rename tar_q0 -> tar_at_0.1pct, acc_q5 -> acc_at_th0.5, etc. (FAR thresholds first, then fixed thresholds)."""
     out = dict(m)
-    for q, t in enumerate(bins.thr_names):
-        for base in ("tar", "far", "frr"):
+    for q, t in enumerate(bins.op_names):
+        for base in ("tar", "far", "frr", "acc", "bacc"):
             out[f"{base}_at_{t}"] = out.pop(f"{base}_q{q}")
     return out
 
@@ -164,7 +164,8 @@ def video_avg(per_video_metrics, gate, counts=None):
 
 
 def metric_names(bins: Bins):
-    return ([f"tar_at_{n}" for n in bins.thr_names] + [f"far_at_{n}" for n in bins.thr_names] + ["auc", "eer"])
+    ops = bins.op_names
+    return ([f"{b}_at_{n}" for b in ("tar", "far", "acc", "bacc") for n in ops] + ["auc", "eer"])
 
 
 # ------------------------------------------------------------------ tables
@@ -173,8 +174,8 @@ def bin_table(bins: Bins, keep, pooled, stacked=None, counts=None, n_obj_pos=Non
     ft = bins.best_far
     mp, mb = named(M.compute(pooled, False, ft), bins), named(M.compute(pooled, True, ft), bins)
     shape = mp["n_pos"].shape
-    names = bins.thr_names
-    base = ([f"{b}_at_{n}" for b in ("tar", "far", "frr") for n in names]
+    names = bins.op_names
+    base = ([f"{b}_at_{n}" for b in ("tar", "far", "frr", "acc", "bacc") for n in names]
             + ["auc", "eer", "best_tar_far", "dprime", "pos_mean", "pos_median", "pos_p5", "pos_p95",
                "neg_mean", "neg_median", "neg_p5", "neg_p95"])
     cols = {"n_pos": mp["n_pos"], "n_neg": mp["n_neg"], "balanced_n_pos": mb["n_pos"], "balanced_n_neg": mb["n_neg"]}
@@ -215,9 +216,10 @@ def kpmin_table(bins: Bins, summaries):
     cnt = sum(s.kpmin_cnt.astype(np.float64) for s in summaries)
     p, n = h[:, 0], h[:, 1]
     df = pd.DataFrame({"bin_min_visible_keypoints": bins.labels("min_visible_keypoints"), "n_pos": p.sum(1), "n_neg": n.sum(1)})
-    for q, t in enumerate(bins.thr_names):
+    for q, t in enumerate(bins.op_names):
         df[f"tar_at_{t}"] = M._div(cnt[:, 0, q], p.sum(1))
         df[f"far_at_{t}"] = M._div(cnt[:, 1, q], n.sum(1))
+        df[f"acc_at_{t}"] = M._div(cnt[:, 0, q] + n.sum(1) - cnt[:, 1, q], p.sum(1) + n.sum(1))
     df["auc"], df["eer"] = M.auc(p, n), M.eer(p, n)
     df["supported"] = df["n_pos"] >= bins.min_pos_pairs
     return df
@@ -267,7 +269,7 @@ class Aggregation:
     # --- headline numbers (four aggregation versions) with CIs
     def headline(self):
         row = self.table(()).iloc[0]
-        names = self.bins.thr_names
+        names = self.bins.op_names
         out = {"object_balanced": {}, "pooled": {}, "video_averaged": {}}
         for k in metric_names(self.bins) + ["best_tar_far", "dprime"] + [f"frr_at_{n}" for n in names]:
             for name, pre in (("object_balanced", "balanced"), ("pooled", "pooled")):
@@ -284,7 +286,8 @@ class Aggregation:
             out["video_averaged"]["n_videos_used"] = int(row["video_avg_n_videos"])
         out["bin_balanced"] = self.bin_balanced()
         out["support"] = {k: (int(row[k]) if k in row else None) for k in ("n_pos", "n_neg", "n_objects", "n_object_pairs")}
-        out["far_targets"] = dict(zip(names, self.bins.far_targets))
+        out["far_targets"] = dict(zip(self.bins.thr_names, self.bins.far_targets))
+        out["fixed_thresholds"] = dict(zip(self.bins.fixed_names, self.bins.fixed_thresholds))
         return out
 
     def bin_balanced(self):
@@ -314,15 +317,22 @@ class Aggregation:
         fineb = sum(s.fine_bal for s in self.s)
         far_p, tar_p = M.roc(fine[0], fine[1])
         far_b, tar_b = M.roc(fineb[0], fineb[1])
-        return pd.DataFrame({"threshold": np.linspace(-1, 1, N_FINE + 1), "far_pooled": far_p, "tar_pooled": tar_p,
-                             "far_balanced": far_b, "tar_balanced": tar_b})
+        out = {"threshold": np.linspace(-1, 1, N_FINE + 1), "far_pooled": far_p, "tar_pooled": tar_p,
+               "far_balanced": far_b, "tar_balanced": tar_b}
+        for pre, hist in (("pooled", fine), ("balanced", fineb)):    # accuracy at EVERY threshold (edge k = similarity >= edge k)
+            P, N = hist[0].sum(), hist[1].sum()
+            tp, fp = (np.concatenate([np.cumsum(h[::-1])[::-1], [0]]) for h in (hist[0], hist[1]))
+            tn = N - fp
+            out[f"acc_{pre}"] = M._div(tp + tn, P + N)
+            out[f"bacc_{pre}"] = (M._div(tp, P) + M._div(tn, N)) / 2
+        return pd.DataFrame(out)
 
     # --- per video / per site / per object
     def _summary_row(self, summaries):
         """One-line summary of a group of videos (a video or a site) from its global pack."""
         agg = Aggregation(summaries, self.bins, self.thresholds)
         t = agg.table(()).iloc[0]
-        names = self.bins.thr_names
+        names = self.bins.op_names
         row = {"n_videos": len(summaries), "n_objects": int(sum(s.n_objects for s in summaries)),
                "n_crops": int(sum(s.n_crops for s in summaries)), "n_pos": int(t["n_pos"]), "n_neg": int(t["n_neg"]),
                "auc": t["pooled_auc"], "eer": t["pooled_eer"]}
@@ -335,6 +345,8 @@ class Aggregation:
                 row[f"balanced_tar_at_{n}"] = t[f"balanced_tar_at_{n}"]
         for n in names:
             row[f"far_at_{n}"] = t[f"pooled_far_at_{n}"]
+            row[f"acc_at_{n}"], row[f"bacc_at_{n}"] = t[f"pooled_acc_at_{n}"], t[f"pooled_bacc_at_{n}"]
+            row[f"balanced_acc_at_{n}"], row[f"balanced_bacc_at_{n}"] = t[f"balanced_acc_at_{n}"], t[f"balanced_bacc_at_{n}"]
         thr = self.thresholds["thresholds"][self.bins.strict_idx]
         row["confused_object_pairs"] = int(sum((s.pair_med > thr).sum() for s in summaries))
         row["n_object_pairs"] = int(sum(len(s.pair_med) for s in summaries))

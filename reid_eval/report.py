@@ -10,7 +10,7 @@ from .aggregate import HEATMAPS
 from .bins import AXES
 from .common import read_json
 from .failures import contact_sheets
-from .plots import plot_axis, plot_groups, plot_heatmap, plot_roc, pretty
+from .plots import plot_accuracy, plot_axis, plot_groups, plot_heatmap, plot_roc, pretty
 
 
 def _f(x, d=3):
@@ -42,11 +42,14 @@ def build_report_from_dir(results_dir, data_root=None):
     fig = out / "figures"
     fig.mkdir(exist_ok=True)
     th = s["thresholds"]
+    fixed = s.get("fixed_names", [])
+    ops = order + fixed                                           # every operating point: FAR thresholds, then fixed thresholds
     L = [f"# {s['title']}", "",
          f"- evaluation: **{s['kind']}**" + (" (all difficulty criteria: delta position, delta azimuth, occlusion, keypoints)"
                                               if s["kind"] == "full" else " (no pose / occlusion / keypoint criteria: every pair counts, one global result)"),
          f"- split `{s['split_version']}`, bins `{s['bins_version']}`, {s['n_videos']} test video(s)",
-         "- thresholds from **validation only**: " + ", ".join(f"t({pretty(n)}) = {th[n]:.4f}" for n in order),
+         "- thresholds from **validation only**: " + ", ".join(f"t({pretty(n)}) = {th[n]:.4f}" for n in order)
+         + ("; fixed (not tuned): " + ", ".join(f"{pretty(n)}" for n in fixed) if fixed else ""),
          f"- CIs: percentile bootstrap over videos ({s['bootstrap']['resamples']} resamples, {int(s['bootstrap']['level'] * 100)}%); "
          + ("" if s["has_ci"] else "**not computed here (fewer than 5 videos)**"), ""]
 
@@ -81,6 +84,20 @@ def build_report_from_dir(results_dir, data_root=None):
     plot_roc(roc, h, fig / "roc.png", names, title=s.get("short_title", ""))
     L += ["## ROC", "", "![roc](figures/roc.png)", ""]
 
+    # ---------------- accuracy at the fixed threshold and at every FAR threshold
+    if f"acc_at_{ops[0]}" in h["pooled"]:
+        npos, nneg = h["support"]["n_pos"], h["support"]["n_neg"]
+        hdr = lambda n: f"{pretty(n)} (t = {th[n]:.3f})"
+        L += ["## Accuracy", "",
+              "Accuracy = (positive pairs accepted + negative pairs rejected) / all pairs, at each threshold. "
+              f"Here {nneg / max(npos + nneg, 1):.0%} of the pairs are negatives, so plain accuracy mostly measures the negatives; "
+              "**balanced accuracy** = (TAR + (1 - FAR)) / 2 is the comparable number. Fixed-threshold counts are exact.", ""]
+        for key, label in (("bacc", "Balanced accuracy"), ("acc", "Accuracy")):
+            rows = [{"version": name, **{hdr(n): _ci(h[name][f"{key}_at_{n}"], 4) for n in ops}} for name in ("object_balanced", "pooled")]
+            L += [f"**{label}**", "", _md_table(pd.DataFrame(rows))]
+        plot_accuracy(roc, {n: th[n] for n in ops}, fig / "accuracy_vs_threshold.png", title=s.get("short_title", ""))
+        L += ["![accuracy vs threshold](figures/accuracy_vs_threshold.png)", ""]
+
     # ---------------- difficulty axes (full evaluation only)
     if s["kind"] == "full":
         L += ["## Difficulty axes", "",
@@ -93,6 +110,9 @@ def build_report_from_dir(results_dir, data_root=None):
                  "objects": df.n_objects.astype(int)}
             for n in order:
                 t[f"TAR {pretty(n)}"] = df[f"balanced_tar_at_{n}"].map(_f)
+            for n in fixed:
+                t[f"bal.acc {pretty(n)}"] = df[f"balanced_bacc_at_{n}"].map(_f)
+                t[f"acc {pretty(n)}"] = df[f"pooled_acc_at_{n}"].map(_f)
             t.update({"AUC": df.balanced_auc.map(_f), "supported": np.where(df.supported, "yes", "**no (grey)**")})
             L += [f"### {axis.replace('_', ' ')}", "", f"![{axis}](figures/curve_{axis}.png)", "", _md_table(pd.DataFrame(t))]
         L += ["## Heatmaps", ""]
@@ -117,6 +137,9 @@ def build_report_from_dir(results_dir, data_root=None):
         t = {"site": ps.site, "videos": ps.n_videos, "objects": ps.n_objects, "crops": ps.n_crops, "AUC": ps.auc.map(_f)}
         for n in order:
             t[f"TAR {pretty(n)}"] = ps[f"balanced_tar_at_{n}"].map(_f)
+        for n in fixed:
+            t[f"bal.acc {pretty(n)}"] = ps[f"balanced_bacc_at_{n}"].map(_f)
+            t[f"acc {pretty(n)}"] = ps[f"acc_at_{n}"].map(_f)
         t["confused obj. pairs"] = ps.confused_object_pairs
         if "report" in ps:
             t["figures"] = _link(ps)
@@ -129,6 +152,9 @@ def build_report_from_dir(results_dir, data_root=None):
         for n in order:
             t[f"TAR {pretty(n)}"] = pv[f"tar_at_{n}"].map(_f)
         t[f"FAR {pretty(order[0])}"] = pv[f"far_at_{order[0]}"].map(lambda x: _f(x, 5))
+        for n in fixed:
+            t[f"bal.acc {pretty(n)}"] = pv[f"balanced_bacc_at_{n}"].map(_f)
+            t[f"acc {pretty(n)}"] = pv[f"acc_at_{n}"].map(_f)
         t["confused obj. pairs"] = pv.confused_object_pairs
         if "report" in pv:
             t["figures"] = _link(pv)
