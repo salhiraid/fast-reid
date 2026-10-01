@@ -16,6 +16,15 @@ configs/bins_v1.yaml         bin edges, FAR targets, minimum support, bootstrap 
 tests/test_reid_*.py         synthetic tests (no real data or weights needed)
 ```
 
+## What `--data` is, and the split
+
+`--data` is the **output folder of `build_reid_crops.py`** (`--out`, the one containing `videos/<id>/meta.json`), not the raw
+`--root` with Videos/annotations/calibration. The dataset has no split of its own: `make_split.py` derives
+`splits/eval_split_v1.json` from the per-video `meta.json` files (eligibility, site-disjoint validation, seeded shuffle).
+The split is checked against the dataset by a fingerprint of the **kept crops** of its videos, not by `summary.json`
+(which `build_reid_crops.py` rewrites on every run). If `quality_filter.py` / `filter_roi.py` / a rebuild changes the kept crops
+of a split video, extraction and evaluation stop and ask for a new split version.
+
 ## One command
 
 ```bash

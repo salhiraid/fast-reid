@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import collections
 import datetime as dt
+import hashlib
 import random
 from pathlib import Path
 
@@ -10,6 +11,30 @@ from reid_data import load_dataset_with_info, group_by_video
 from .common import sha256_file
 
 DEFAULT_CRITERIA = {"min_tracklets": 2, "min_crops_per_tracklet": 2, "min_crops": 20, "require_calibration": True}
+
+
+def crops_fingerprint(by_video, video_ids) -> str:
+    """sha256 over (video, tracklet, crop_uid) of the kept crops of the given videos, in canonical order.
+
+    This, not summary.json, decides whether the dataset still matches a split: build_reid_crops.py rewrites
+    summary.json on every run (even a resume), while the kept crops of a finished video do not change.
+    """
+    h = hashlib.sha256()
+    for vid in sorted(video_ids):
+        for r in by_video[vid]:
+            h.update(f"{vid}\t{r.tracklet_id}\t{r.crop_uid}\n".encode())
+    return h.hexdigest()
+
+
+def check_fingerprints(split, by_video, sets):
+    """Raise if the kept crops of the split's videos changed since the split was made (legacy splits: skipped)."""
+    saved = split.get("crops_fingerprint_sha256")
+    if not saved:
+        return
+    for s in sets:
+        if all(v in by_video for v in split[s]) and crops_fingerprint(by_video, split[s]) != saved[s]:
+            raise ValueError(f"the kept crops of the '{s}' videos changed since split {split['version']} was made "
+                             f"(quality filter / rebuild?). Create a new split version; never reuse or edit this one.")
 
 
 def eligible_videos(records, infos, criteria):
@@ -88,7 +113,8 @@ def build_split(data_root, version="v1", seed=0, n_val=30, n_test=150, criteria=
         "version": version,
         "created": created or dt.datetime.now().replace(microsecond=0).isoformat(),
         "dataset_root": str(data_root),
-        "dataset_summary_sha256": sha256_file(summary) if summary.is_file() else None,
+        "dataset_summary_sha256": sha256_file(summary) if summary.is_file() else None,  # informational only
+        "crops_fingerprint_sha256": {"validation": crops_fingerprint(by_video, val), "test": crops_fingerprint(by_video, test)},
         "seed": seed,
         "criteria": criteria,
         "site_disjoint": site_disjoint,
