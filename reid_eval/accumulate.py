@@ -98,6 +98,12 @@ def _groups(starts, N, block_pairs):
         t0 = t1
 
 
+def _upper(S):
+    """Strictly upper-triangular mask of the (R, C) block of rows r0.. x columns r0.. (column > row)."""
+    R, C = S.shape
+    return torch.arange(C, device=S.device)[None, :] > torch.arange(R, device=S.device)[:, None]
+
+
 def _fine_index(s):
     return ((s.clamp(-1, 1) + 1) * (N_FINE / 2)).long().clamp_(0, N_FINE - 1)
 
@@ -110,7 +116,7 @@ def fine_histograms(emb, meta, device=None, block_pairs=1 << 24):
     for t0, t1 in _groups(starts, N, block_pairs):
         r0, r1 = int(starts[t0]), int(starts[t1])
         S = E[r0:r1] @ E[r0:].T
-        mask = torch.triu(torch.ones_like(S, dtype=torch.bool), 1)
+        mask = _upper(S)
         same = trk[r0:r1, None] == trk[None, r0:]
         ty = (~same).long()
         idx = ty * N_FINE + _fine_index(S)
@@ -149,7 +155,7 @@ def accumulate_video(emb, meta: VideoMeta, bins: Bins, thresholds, device=None, 
     KCNT = [i64(KM1 * 2) for _ in range(nthr)]
     TARN = [i64(T * P1) for _ in range(nthr)]
     TARD = i64(T * P1)
-    low_s = torch.full((T,), float("inf"), dtype=torch.float32, device=dev)
+    low_s = np.full(T, np.inf, np.float32)
     low_i = np.full(T, -1, np.int64)
     low_j = np.full(T, -1, np.int64)
     pos_keys, neg_keys = [], []
@@ -165,7 +171,7 @@ def accumulate_video(emb, meta: VideoMeta, bins: Bins, thresholds, device=None, 
     for t0, t1 in _groups(starts, N, block_pairs):
         r0, r1 = int(starts[t0]), int(starts[t1])
         S = E[r0:r1] @ E[r0:].T
-        mask = torch.triu(torch.ones_like(S, dtype=torch.bool), 1)
+        mask = _upper(S)
         ri, cj = torch.nonzero(mask, as_tuple=True)
         s_all = S[ri, cj]
         del S, mask
@@ -228,15 +234,16 @@ def accumulate_video(emb, meta: VideoMeta, bins: Bins, thresholds, device=None, 
                 TARD += torch.bincount(tip * P1 + pbp, minlength=T * P1)
                 for q, t in enumerate(thr):
                     TARN[q] += torch.bincount((tip * P1 + pbp)[sp >= t], minlength=T * P1)
-                cm = torch.full((T,), float("inf"), dtype=torch.float32, device=dev)
-                cm.scatter_reduce_(0, tip, sp, "amin", include_self=True)
-                hit = torch.nonzero(sp == cm[tip]).flatten()
-                ht = tip[hit].cpu().numpy()
-                for tk, first in zip(*np.unique(ht, return_index=True)):
-                    h = hit[first]
-                    if cm[tk] < low_s[tk]:
-                        low_s[tk] = cm[tk]
-                        low_i[tk] = int(i[isp][h]); low_j[tk] = int(j[isp][h])
+                # lowest positive of each object in this chunk: sort by (object, similarity), take the first of each object
+                order = torch.argsort(tip.double() + (sp.double().clamp(-1, 1) + 1) / 4)
+                ts = tip[order]
+                first = torch.ones_like(ts, dtype=torch.bool)
+                first[1:] = ts[1:] != ts[:-1]
+                sel = order[first]
+                objs, vals = ts[first].cpu().numpy(), sp[sel].cpu().numpy()
+                ic, jc = i[isp][sel].cpu().numpy(), j[isp][sel].cpu().numpy()
+                better = vals < low_s[objs]
+                low_s[objs[better]], low_i[objs[better]], low_j[objs[better]] = vals[better], ic[better], jc[better]
                 # failure candidates: lowest positives with delta position < 1 m (first known bin)
                 near = pbp == 0
                 if near.any():
@@ -248,9 +255,7 @@ def accumulate_video(emb, meta: VideoMeta, bins: Bins, thresholds, device=None, 
         if grp_neg_s:
             ns, na, nb = torch.cat(grp_neg_s), torch.cat(grp_neg_a), torch.cat(grp_neg_b)
             key = na * T + nb
-            o1 = torch.argsort(ns)
-            o2 = torch.argsort(key[o1], stable=True)
-            order = o1[o2]
+            order = torch.argsort(key.double() + (ns.double().clamp(-1, 1) + 1) / 4)  # by pair, then similarity
             skey, ss = key[order], ns[order]
             uk, cnts = torch.unique_consecutive(skey, return_counts=True)
             st = torch.cumsum(cnts, 0) - cnts
@@ -275,7 +280,7 @@ def accumulate_video(emb, meta: VideoMeta, bins: Bins, thresholds, device=None, 
         "fine": cpu(FI.view(2, N_FINE)), "fine_bal": cpu(FB.view(2, N_FINE)),
         "pos_keys": np.stack([pk // T, pk % T], 1), "neg_keys": np.stack([nk // (T * T), (nk // T) % T, nk % T], 1),
         "obj_n": cpu(counts), "obj_tar_num": np.stack([cpu(x).reshape(T, P1) for x in TARN]), "obj_tar_den": cpu(TARD).reshape(T, P1),
-        "obj_low_sim": np.where(np.isinf(cpu(low_s)), np.nan, cpu(low_s)), "obj_low_i": low_i, "obj_low_j": low_j,
+        "obj_low_sim": np.where(np.isinf(low_s), np.nan, low_s), "obj_low_i": low_i, "obj_low_j": low_j,
         "pair_a": cat(pa, np.int64), "pair_b": cat(pb_, np.int64), "pair_med": cat(pmed, np.float32),
         "pair_max": cat(pmax, np.float32), "pair_n": cat(pn, np.int64),
         "fail_neg": fneg, "fail_pos": fpos,

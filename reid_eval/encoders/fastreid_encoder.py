@@ -39,6 +39,7 @@ class FastReIDEncoder(BaseEncoder):
         cfg = get_cfg()
         cfg.merge_from_file(str(self.config_path))
         state = self._load_state(self.weights_path, trust_checkpoint)
+        self._adapt_legacy_state(state, cfg)
         # classifier size depends on the training set: read it from the checkpoint so the load can be strict
         cfg.MODEL.HEADS.NUM_CLASSES = int(state["heads.weight"].shape[0]) if "heads.weight" in state else 0
         cfg.MODEL.BACKBONE.PRETRAIN = False  # weights come from our checkpoint; never download ImageNet weights
@@ -57,9 +58,29 @@ class FastReIDEncoder(BaseEncoder):
         with torch.no_grad():
             self._dim = int(self.encode(torch.zeros(2, 3, *self.input_size)).shape[1])
 
+    def _adapt_legacy_state(self, state, cfg):
+        """Model-zoo checkpoints come from older FastReID versions. Two harmless differences, handled explicitly:
+        * the classifier is called `heads.classifier.weight` (now `heads.weight`); it is only used in training, never at test time;
+        * `pixel_mean` / `pixel_std` are stored in the checkpoint (now non-persistent buffers). They are NOT silently ignored:
+          they must equal the config's values, otherwise the model was trained with another normalisation.
+        Anything else that does not match is still an error (strict load below).
+        """
+        if "heads.weight" not in state and "heads.classifier.weight" in state:
+            state["heads.weight"] = state.pop("heads.classifier.weight")
+            self.notes.append("legacy checkpoint: heads.classifier.weight loaded as heads.weight (classifier unused at test time)")
+        for key, want in (("pixel_mean", cfg.MODEL.PIXEL_MEAN), ("pixel_std", cfg.MODEL.PIXEL_STD)):
+            if key in state:
+                got = state.pop(key).flatten().float()
+                if not torch.allclose(got, torch.tensor(list(want), dtype=torch.float32), atol=1e-2):
+                    raise RuntimeError(f"checkpoint {key}={got.tolist()} differs from the config's MODEL.{key.upper()}={list(want)}")
+                self.notes.append(f"legacy checkpoint: stored {key} equals the config value (checked, then dropped)")
+
     @staticmethod
     def _load_state(path, trust):
-        ckpt = torch.load(str(path), map_location="cpu", weights_only=not trust)  # pickle is unsafe: see --trust-checkpoint
+        try:
+            ckpt = torch.load(str(path), map_location="cpu", weights_only=not trust)  # pickle is unsafe: see --trust-checkpoint
+        except TypeError:  # torch < 1.13 has no weights_only argument
+            ckpt = torch.load(str(path), map_location="cpu")
         state = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
         return {(k[7:] if k.startswith("module.") else k): v for k, v in state.items()}
 
@@ -71,12 +92,18 @@ class FastReIDEncoder(BaseEncoder):
         # copy: Baseline.preprocess_image normalises in place and the caller may reuse the batch (flip TTA)
         return self.model(batch.to(self.device, copy=True)).float().cpu()
 
+    def _config_name(self):
+        try:  # Path.is_relative_to needs Python >= 3.9
+            return str(self.config_path.relative_to(REPO_ROOT))
+        except ValueError:
+            return str(self.config_path)
+
     def describe(self):
         return {
             "model_name": self.name, "repo": "https://github.com/JDAI-CV/fast-reid", "repo_commit": git_commit(),
             "checkpoint": self.weights_path.name, "checkpoint_sha256": sha256_file(self.weights_path),
             "checkpoint_source": "record the download URL and licence here (VeRi/VehicleID/VERI-Wild weights are research-only)",
-            "config": str(self.config_path.relative_to(REPO_ROOT)) if self.config_path.is_relative_to(REPO_ROOT) else str(self.config_path),
+            "config": self._config_name(),
             "feature": "bn_feat (test-time output of EmbeddingHead, the feature ReidEvaluator uses)",
             "input_size": list(self.input_size),
             "normalisation": {"mean": [m / 255 for m in self.mean], "std": [s / 255 for s in self.std], "color": "RGB",

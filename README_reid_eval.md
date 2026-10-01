@@ -16,6 +16,22 @@ configs/bins_v1.yaml         bin edges, FAR targets, minimum support, bootstrap 
 tests/test_reid_*.py         synthetic tests (no real data or weights needed)
 ```
 
+## Environment
+
+Tested with Python 3.11 / torch 2.14 (CPU). The code avoids Python >= 3.8 and torch >= 1.12 features, but **the GPU build of torch
+must support your card**: an RTX 2000 Ada / 40-series is sm_89 and needs torch with CUDA >= 11.8 (e.g. `torch>=2.0` + cu118/cu121,
+Python >= 3.8). A torch that lists only up to `sm_75` in the "not compatible" warning will fail at the first kernel
+("no kernel image is available"); use `--device cpu` or a newer env, e.g.
+
+```bash
+conda create -n reid python=3.10 -y && conda activate reid
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+pip install yacs termcolor tabulate scikit-learn opencv-python pandas matplotlib pyyaml pillow
+```
+
+FastReID model-zoo checkpoints (older format: `heads.classifier.weight`, stored `pixel_mean/std`) load directly; the differences are
+checked and listed under `notes` in the manifest. `faiss` is not needed.
+
 ## What `--data` is, and the split
 
 `--data` is the **output folder of `build_reid_crops.py`** (`--out`, the one containing `videos/<id>/meta.json`), not the raw
