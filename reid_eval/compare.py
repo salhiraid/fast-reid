@@ -39,7 +39,8 @@ def compare(dir_a, dir_b, bins_path=None):
     if ids_a != [x.video_id for x in b.s]:
         raise ValueError("the two models do not cover the same test videos")
     ft = bins.best_far
-    METRICS = [f"tar_at_{n}" for n in bins.thr_names] + [f"far_at_{n}" for n in bins.thr_names] + ["auc", "eer"]
+    METRICS = ([f"tar_at_{n}" for n in bins.thr_names] + [f"far_at_{n}" for n in bins.thr_names] + ["auc", "eer"]
+               + [f"{b}_at_{n}" for n in bins.fixed_names for b in ("acc", "bacc")])
     strict = f"tar_at_{bins.strict_name}"
     if not a.use_ci:
         raise ValueError('paired bootstrap needs at least 5 videos')

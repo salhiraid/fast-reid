@@ -1,0 +1,22 @@
+# Same bins and FAR targets as bins_v2.yaml, plus a FIXED cosine threshold (0.5) reported next to the FAR thresholds.
+# Every operating point gets TAR, FAR, FRR, accuracy and balanced accuracy (all exact counts) in every table.
+# FROZEN once results exist: change = new file (bins_v4.yaml), never edit.
+version: v3
+
+delta_position_m: [0, 1, 3, 5, 10, 20, 40, .inf]
+delta_azimuth_deg: [0, 5, 10, 20, 45, 90, 180]
+occlusion: [both_visible, one_occluded, both_occluded]
+shared_keypoints_iou: [0, 0.25, 0.5, 0.75, 1.0]
+min_visible_keypoints: [0, 4, 8, 12, 16, .inf]
+
+far_targets: [1.0e-3, 1.0e-2, 2.0e-2, 5.0e-2, 1.0e-1]   # 0.1 %, 1 %, 2 %, 5 %, 10 % (thresholds set on validation negatives)
+fixed_thresholds: [0.5]                                  # cosine similarity; not tuned on anything
+best_tar_far_target: 1.0e-2
+heatmap_far_targets: [1.0e-3, 1.0e-2]
+
+min_support:
+  positive_pairs: 30
+  objects: 10
+video_average_min_pairs: {positive: 30, negative: 30}
+
+bootstrap: {resamples: 1000, seed: 0, level: 0.95}

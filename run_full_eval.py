@@ -25,7 +25,7 @@ def main(argv=None):
     ap.add_argument("--model", required=True)
     ap.add_argument("--weights", default=None)
     ap.add_argument("--split", default="splits/eval_split_v1.json")
-    ap.add_argument("--bins", default="configs/bins_v2.yaml", help="FAR targets 0.1, 1, 2, 5, 10 %%")
+    ap.add_argument("--bins", default="configs/bins_v3.yaml", help="FAR targets 0.1, 1, 2, 5, 10 %%")
     ap.add_argument("--variants", nargs="+", choices=["full", "plain"], default=["full", "plain"])
     ap.add_argument("--no-per-subset", action="store_true", help="skip the per-site and per-video reports (faster)")
     ap.add_argument("--no-match-sheets", action="store_true", help="skip the per-object top-10 match images (faster)")

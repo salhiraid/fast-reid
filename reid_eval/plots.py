@@ -19,8 +19,8 @@ SEQ = LinearSegmentedColormap.from_list("seq_blue", ["#cde2fb", "#86b6ef", "#398
 
 
 def pretty(name):
-    """'0.1pct' -> 'FAR 0.1%'"""
-    return "FAR " + name.replace("pct", "%")
+    """'0.1pct' -> 'FAR 0.1%';  'th0.5' -> 'threshold 0.5'"""
+    return "threshold " + name[2:] if name.startswith("th") else "FAR " + name.replace("pct", "%")
 
 
 def _style(ax):
@@ -163,4 +163,35 @@ def plot_groups(df: pd.DataFrame, label_col: str, path, thr_names, title=""):
     ax.legend(frameon=False, fontsize=8, loc="lower right")
     fig.tight_layout()
     fig.savefig(path)
+    plt.close(fig)
+
+
+def plot_accuracy(roc: pd.DataFrame, thresholds: dict, path, title=""):
+    """Balanced accuracy (object-balanced; the pooled one is indistinguishable) and plain accuracy at EVERY cosine threshold; the operating points
+    (the FAR thresholds from validation, and the fixed threshold) are vertical lines. Accuracy is dominated by negatives, so the
+    balanced accuracy (TAR + TNR) / 2 is the one to compare."""
+    fig, ax = plt.subplots(figsize=(6.4, 4.0), dpi=130)
+    _style(ax)
+    ax.grid(axis="x", color="#e6e5e0", lw=0.6)
+    t = roc["threshold"].to_numpy()
+    lo = 0.0
+    for col, c, ls, lab in (("bacc_balanced", BLUE, "-", "balanced accuracy (object-balanced)"),
+                            ("acc_pooled", ORANGE, "-", "accuracy (pooled; dominated by negatives)")):
+        ax.plot(t, roc[col], ls, color=c, lw=1.7, label=lab)
+    ymax = 1.02
+    for name, v in thresholds.items():
+        fixed = name.startswith("th")
+        ax.axvline(v, color=INK if fixed else GREY, lw=1.2 if fixed else 0.9, ls="-" if fixed else ":", zorder=1)
+        # FAR labels left of their line, the fixed threshold's label right of its line: they stay readable when 0.5 ~ a FAR threshold
+        ax.text(v, 0.02, (" " if fixed else "") + pretty(name).replace("threshold ", "th ") + ("" if fixed else " "),
+                transform=ax.get_xaxis_transform(), fontsize=6.5, color=INK if fixed else INK2, rotation=90, va="bottom",
+                ha="left" if fixed else "right")
+    ax.set_xlim(lo, 1.0)
+    ax.set_ylim(0.4, ymax)
+    ax.set_xlabel("cosine similarity threshold", fontsize=8, color=INK2)
+    ax.set_ylabel("accuracy over all pairs", fontsize=8, color=INK2)
+    ax.set_title((title + "  " if title else "") + "accuracy vs threshold; vertical lines = operating points", fontsize=8.5, loc="left", color=INK)
+    ax.legend(frameon=False, fontsize=7.5, loc="upper center", bbox_to_anchor=(0.5, -0.16))
+    fig.tight_layout()
+    fig.savefig(path, bbox_inches="tight")
     plt.close(fig)

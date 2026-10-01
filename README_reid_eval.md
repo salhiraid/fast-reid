@@ -12,7 +12,7 @@ extract_templates.py         encode once, one .npz per video       -> templates/
 validate_encoder.py          wrapper check (VeRi-776 mAP, or same-vs-different tracklet pairs)
 evaluate.py                  thresholds on validation, metrics on test -> results/<model>__<mode>/<split>/
 compare_models.py            paired bootstrap between two evaluated models
-configs/bins_v2.yaml         bin edges, FAR targets (0.1/1/2/5/10 %), minimum support, bootstrap settings (v1: 1 % and 0.1 % only)
+configs/bins_v3.yaml         bin edges, FAR targets (0.1/1/2/5/10 %) + fixed threshold 0.5, minimum support, bootstrap (v2: no fixed threshold; v1: FAR 1 % and 0.1 % only)
 tests/test_reid_*.py         synthetic tests (no real data or weights needed)
 ```
 
@@ -68,7 +68,7 @@ python extract_templates.py --model fastreid_veriwild_r50ibn --weights veriwild_
 python evaluate.py --choose-mode templates/fastreid_veriwild_r50ibn__letterbox templates/fastreid_veriwild_r50ibn__unpad_stretch \
     --split splits/eval_split_v1.json --data $D --out results/
 python evaluate.py --templates templates/fastreid_veriwild_r50ibn__unpad_stretch --split splits/eval_split_v1.json \
-    --data $D --bins configs/bins_v2.yaml --out results/
+    --data $D --bins configs/bins_v3.yaml --out results/
 #    ... add --plain for the evaluation without the difficulty criteria
 
 # 5. rebuild report.md from the saved files only
@@ -117,6 +117,20 @@ The **same figures and tables are produced for every site and every video**: `pe
 each hold `report.md`, `summary.json`, `roc.csv`, `figures/` (ROC, 4 difficulty curves, heatmaps) and `bins_*.csv`; the main report links
 to them from its per-site and per-video tables. Bootstrap CIs need at least 5 videos, so they exist globally and for large sites only;
 single videos have none, and most of their bins fall below the minimum support (greyed). `--no-per-subset` skips these reports (faster).
+
+## Accuracy at a fixed threshold and at every FAR threshold
+
+`configs/bins_v3.yaml` (the default) adds a **fixed cosine threshold of 0.5** next to the five FAR thresholds (0.1, 1, 2, 5, 10 %). Every
+operating point gets TAR, FAR, FRR, **accuracy** and **balanced accuracy** in every table (global, per bin, per site, per video, with bootstrap
+CIs where there are >= 5 videos): columns `acc_at_th0.5`, `bacc_at_th0.5`, `acc_at_1pct`, ... (`pooled_*` and `balanced_*` prefixes in the bin CSVs).
+All of them are exact counts, checked against a brute-force computation in `tests/test_reid_accuracy.py`.
+
+* accuracy = (positive pairs accepted + negative pairs rejected) / all pairs. About 85 % of the pairs are negatives, so it mostly measures the
+  negatives; **balanced accuracy** = (TAR + (1 - FAR)) / 2 is the number to compare. The object-balanced variants weight objects equally.
+* `roc.csv` (global, per site, per video) also holds accuracy and balanced accuracy at **every** threshold (2,000 steps), and
+  `figures/accuracy_vs_threshold.png` draws them with the operating points as vertical lines.
+* The fixed threshold is not tuned on anything. To choose another one, add it to `fixed_thresholds` in a new bins file (e.g. `bins_v4.yaml`).
+  A threshold that maximises accuracy would have to be chosen on the validation videos, never on test.
 
 ## Per-object match images (top-10 positives and negatives)
 

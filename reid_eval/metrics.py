@@ -115,4 +115,8 @@ def compute(pack, balanced=False, far_target=1e-2):
         out[f"tar_q{q}"] = _div(cnt[..., 0, q], Wp)
         out[f"far_q{q}"] = _div(cnt[..., 1, q], Wn)
         out[f"frr_q{q}"] = 1 - out[f"tar_q{q}"]
+        # accuracy over all pairs (positives accepted + negatives rejected) and balanced accuracy = (TAR + TNR) / 2.
+        # Plain accuracy is dominated by the (much more numerous) negatives; balanced accuracy is not.
+        out[f"acc_q{q}"] = _div(cnt[..., 0, q] + (Wn - cnt[..., 1, q]), Wp + Wn)
+        out[f"bacc_q{q}"] = (out[f"tar_q{q}"] + (1 - out[f"far_q{q}"])) / 2
     return out

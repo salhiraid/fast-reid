@@ -38,6 +38,7 @@ class Bins:
     far_targets: list
     best_far: float
     heat_far: list
+    fixed_thresholds: list
     min_pos_pairs: int
     min_objects: int
     vavg_pos: int
@@ -56,13 +57,14 @@ class Bins:
         b = cls(version=str(d["version"]), pos_edges=fl("delta_position_m"), az_edges=fl("delta_azimuth_deg"),
                 occ_names=list(d["occlusion"]), kp_edges=fl("shared_keypoints_iou"), kpmin_edges=fl("min_visible_keypoints"),
                 far_targets=[float(x) for x in d["far_targets"]], best_far=float(d.get("best_tar_far_target", 1e-2)),
-                heat_far=[float(x) for x in d.get("heatmap_far_targets", [min(d["far_targets"])])], min_pos_pairs=int(d["min_support"]["positive_pairs"]),
+                heat_far=[float(x) for x in d.get("heatmap_far_targets", [min(d["far_targets"])])],
+                fixed_thresholds=[float(x) for x in d.get("fixed_thresholds", [])], min_pos_pairs=int(d["min_support"]["positive_pairs"]),
                 min_objects=int(d["min_support"]["objects"]), vavg_pos=int(d["video_average_min_pairs"]["positive"]),
                 vavg_neg=int(d["video_average_min_pairs"]["negative"]), boot_resamples=int(d["bootstrap"]["resamples"]),
                 boot_seed=int(d["bootstrap"]["seed"]), boot_level=float(d["bootstrap"]["level"]),
                 sha256=sha256_file(path), raw=d)
         assert len(b.occ_names) == 3 and len(b.far_targets) >= 1
-        assert len(set(b.thr_names)) == len(b.far_targets), "duplicate FAR targets"
+        assert len(set(b.op_names)) == len(b.op_names), "duplicate FAR targets / fixed thresholds"
         assert all(any(np.isclose(h, t) for t in b.far_targets) for h in b.heat_far), "heatmap_far_targets must be in far_targets"
         for e in (b.pos_edges, b.az_edges, b.kp_edges, b.kpmin_edges):
             assert np.all(np.diff(e) > 0), "bin edges must increase"
@@ -89,6 +91,14 @@ class Bins:
     @property
     def thr_names(self):
         return [far_name(t) for t in self.far_targets]
+
+    @property
+    def fixed_names(self):  # fixed cosine thresholds, e.g. 0.5 -> 'th0.5'
+        return [f"th{t:g}" for t in self.fixed_thresholds]
+
+    @property
+    def op_names(self):  # every operating point, in the order of the accumulated counts: FAR thresholds first, then fixed ones
+        return self.thr_names + self.fixed_names
 
     @property
     def strict_idx(self):  # the smallest FAR target: used for per-object / confused-pair / failure analysis
