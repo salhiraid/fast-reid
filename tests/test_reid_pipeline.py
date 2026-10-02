@@ -65,3 +65,6 @@ def test_run_full_eval_one_command(tmp_path, capsys):
     assert len(reports) == 1 and "DONE" in capsys.readouterr().out
     assert run_full_eval.main(args) == 0  # re-run: split reused, templates skipped
     assert len(list((tmp_path / "r").glob("debug_colorgrid__*/v1__plain/report.md"))) == 1   # both variants by default
+    assert len(list((tmp_path / "r").glob("debug_colorgrid__*/v1__site-gallery/report.md"))) == 1   # site matching runs by default
+    allm = list((tmp_path / "r").glob("debug_colorgrid__*/v1__all_methods/report.md"))                # and the final comparison
+    assert len(allm) == 1 and "Site-averaged results" in allm[0].read_text() and (allm[0].parent / "figures" / "roc_mean_over_sites.png").exists()

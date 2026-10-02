@@ -52,7 +52,7 @@ def build_report_from_dir(results_dir, data_root=None):
                                               if s["kind"] == "full" else " (no pose / occlusion / keypoint criteria: every pair counts, one global result)"),
          f"- split `{s['split_version']}`, bins `{s['bins_version']}`, {s['n_videos']} test video(s)",
          *([f"- **threshold protocol**: {proto}",
-            f"- {s['threshold_units_used']} video(s) evaluated, {len(s['threshold_units_skipped'])} skipped; median number of calibration "
+            f"- {s['threshold_units_used']} {s.get('unit', 'video')}(s) evaluated, {len(s['threshold_units_skipped'])} skipped; median number of calibration "
             f"negative pairs per threshold: {s['n_calibration_negatives_median']:,.0f} (few negatives make a strict-FAR threshold noisy). "
             "The FAR below is MEASURED" + (" only in the held-out protocols; here it is forced to the target by construction." if s.get("oracle") else
                                            " on pairs that were not used to set the threshold."),
@@ -148,8 +148,8 @@ def build_report_from_dir(results_dir, data_root=None):
               "`matches/<video>/index.md` (images + table, most confusable objects first) and `matches/<video>/index.csv`.", ""]
 
     if proto and s.get("threshold_units_skipped") and (out / "per_video.csv").exists():
-        L += ["## Videos that could not be evaluated with this protocol", "",
-              _md_table(pd.DataFrame([{"video": u["unit"], "site": u["site"], "reason": u["status"]} for u in s["threshold_units_skipped"]])), ""]
+        L += [f"## {s.get('unit', 'video').capitalize()}s that could not be evaluated with this protocol", "",
+              _md_table(pd.DataFrame([{s.get("unit", "video"): u["unit"], "site": u["site"], "reason": u["status"]} for u in s["threshold_units_skipped"]])), ""]
 
     # ---------------- spread across videos and sites
     def spread(csv, unit):

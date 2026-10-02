@@ -154,6 +154,30 @@ and the rows do not evaluate exactly the same pairs, so differences mix the effe
 Only these two run by default; choose with `--variants full plain thr-video thr-site`, or run them alone with
 `evaluate.py --templates ... --thr-mode video site`.
 
+### Site matching (gallery = the whole site) and the all-methods comparison
+
+`site-gallery` (default in `run_full_eval.py`, or `evaluate.py --thr-mode site-gallery`) evaluates **matching against the whole site**: all crops
+of all the test videos of a site form one gallery, so an object is matched with objects of the site's *other* videos too, with **a threshold per
+site**. Positives = same tracklet; every other pair is a negative, **including cross-video pairs, whose identity is unknown** (the dataset has no
+cross-video identity link): this assumes no vehicle reappears in two videos of a site, otherwise FAR is overstated. Held out like the per-video
+protocol: the site's objects are split in two folds, each fold is evaluated with the threshold from the negatives of the other fold (sites with
+< 4 objects are skipped). `site-gallery-oracle` (opt-in) tunes on the evaluated pairs: optimistic. Plain kind (positions of different videos
+are not comparable); units = sites; folder `<split>__site-gallery`.
+
+At the end of `run_full_eval.py` (or `evaluate.py --all-methods results/<model>__<mode> --split-version v1`) the **all-methods comparison** is
+written to `results/<model>__<mode>/<split>__all_methods/report.md`: for every method that was run (global threshold within video; threshold per
+video; per site; site matching; and the oracle ones) it gives, **averaged over sites (± std over sites)**:
+
+* a table of TAR at 0.1 / 1 / 2 / 5 / 10 % FAR, AUC, EER and accuracy / balanced accuracy at threshold 0.5;
+* accuracy and balanced accuracy at every operating point, and the FAR actually measured at each target;
+* the same numbers pooled over all pairs (object-balanced and pooled), and per-site tables (TAR, balanced accuracy, AUC, EER);
+* curve figures only (no heatmaps): ROC averaged over sites, TAR vs FAR target, measured FAR vs target, accuracy and balanced accuracy vs
+  threshold, AUC / EER per method (one dot per site), and small multiples with one panel per site;
+* `all_methods_summary.csv` (one row per method) and `all_methods_per_site.csv` (every metric of every site and method).
+
+The methods do not evaluate exactly the same pairs, and plain accuracy depends on the share of positives: compare **balanced accuracy** across
+methods, and read differences as a mix of the threshold protocol and the change of pairs.
+
 ### Site-level matching visuals (objects of a site vs the gallery of the whole site)
 
 The `thr-site` run also writes `<split>__thr-site/site_matches/<site>/` for every site (index in `site_matches/index.md`): the objects of the
