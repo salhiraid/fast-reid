@@ -144,13 +144,44 @@ tuning on test, so the default protocols hold the calibration data out of the me
 | `<split>__thr-site` | leave-one-video-out: each test video is evaluated with the threshold set on the negatives of the OTHER test videos of its site. A site with one test video is skipped (the validation videos cannot be used: the split is site-disjoint) |
 | `<split>__thr-video-oracle`, `__thr-site-oracle` | opt-in (`--variants ... thr-video-oracle thr-site-oracle`). The threshold is set on the evaluated data itself (FAR is forced to the target): an optimistic **upper bound**, labelled as such in the report |
 
-They use the plain kind (no pose / occlusion / keypoint criteria) and the same FAR targets and fixed threshold; each has global,
-per-site and per-video tables/figures like the other evaluations. Per-unit thresholds and the number of calibration negatives are in
+They are **full evaluations**: all difficulty criteria (delta position / azimuth / occlusion / keypoints: bin tables, curves, heatmaps, joint cells),
+the five FAR targets plus the fixed threshold, accuracy and balanced accuracy everywhere, and global, per-site and per-video tables/figures,
+exactly like the global-threshold `full` evaluation but scored at each unit's own thresholds (`--thr-kind plain` gives global metrics only). The match images are
+only produced by the global `full` evaluation. Per-unit thresholds and the number of calibration negatives are in
 `thresholds_per_unit.csv`; videos that could not be evaluated are listed in the report. `<split>__threshold_comparison.md/.csv`
 (in the model folder) puts the protocols side by side. Caveats: a single video has few negatives, so strict-FAR thresholds (0.1 %) are noisy;
 and the rows do not evaluate exactly the same pairs, so differences mix the effect of the threshold with the change of pairs.
 Only these two run by default; choose with `--variants full plain thr-video thr-site`, or run them alone with
 `evaluate.py --templates ... --thr-mode video site`.
+
+### Site-level matching visuals (objects of a site vs the gallery of the whole site)
+
+The `thr-site` run also writes `<split>__thr-site/site_matches/<site>/` for every site (index in `site_matches/index.md`): the objects of the
+site matched against the gallery of **all crops of all the site's test videos**. Only some objects are drawn, not all (`--site-queries N`,
+default 10 per site, seeded; `0` = none; `--match-topk` sets the 10 matches per row). Per site:
+
+* `queries/<video>__<object>.png`: one sheet per sampled query object (query = medoid crop). Rows: **same object** (10 most similar crops;
+  `FR` below the threshold), **other objects of the same video** (10 most similar objects; `FA` above it), **other videos of the site**
+  (10 most similar objects; `?` above it). For other objects the value is the object-level similarity (below) and the tile is that object's
+  crop closest to the query.
+* `object_matrix.png`: object x object similarity of the whole site, blocks = videos; red dots = same-video pair above the threshold,
+  purple dots = other-video pair above it.
+* `cross_video_candidates.csv` + `cross_video_candidates_NN.png`: the 200 most similar object pairs from different videos (best crop pair drawn).
+* `queries_index.csv`: per sampled query, best same-object similarity, most similar other object (same video / other videos), number of
+  other-video objects above the threshold.
+
+Things to know. **Only same-video matches have labels** (`identity_id` is per video): a match between two videos is never counted as an error,
+it is a *candidate* (the same vehicle may really reappear); `?` only means "above the site threshold". **Object-to-object similarity is the
+mean cosine over all crop pairs** of the two objects (not the max: the best of ~100 crop pairs would pass a crop-level threshold far more
+often than the nominal FAR). **The site threshold** is the FAR-1 % threshold (nearest target) of all within-video negative pairs of the
+site's test videos: a visualisation aid set on the data it is drawn from, not a result. A site with one video has no cross-video row.
+
+### Means over videos and sites
+
+Every evaluation reports, besides the pooled and object-balanced numbers, **video_averaged** (metric per video, then the mean over videos with
+>= 30 positive and >= 30 negative pairs) and **site_averaged** (metric per site, pooled over its videos, then the mean over sites; CI only
+with >= 5 sites), for TAR, FAR, accuracy, balanced accuracy, AUC and EER. `per_video_stats.csv` / `per_site_stats.csv` give the mean, std,
+median, min and max of every metric over videos / sites, and the report has a "Spread across videos and sites" section.
 
 ## Per-object match images (top-10 positives and negatives)
 

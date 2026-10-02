@@ -68,8 +68,8 @@ def build_report_from_dir(results_dir, data_root=None):
           + ("Each video / site has its own threshold (see the protocol above)." if proto else
              "The global thresholds come from validation; the FAR they give here is measured, not forced."), ""]
     rows = []
-    for name in ("object_balanced", "pooled", "video_averaged"):
-        d = h[name]
+    for name in ("object_balanced", "pooled", "video_averaged", "site_averaged"):
+        d = h.get(name, {})
         if "tar_at_" + order[0] not in d:
             continue
         rows.append({"version": name, **{f"TAR @ {pretty(n)}": _ci(d[f"tar_at_{n}"]) for n in order}})
@@ -83,6 +83,9 @@ def build_report_from_dir(results_dir, data_root=None):
           _md_table(pd.DataFrame([{"version": name, "AUC": _ci(h[name]["auc"], 4), "EER": _ci(h[name]["eer"], 4),
                                    "best TAR @ FAR 1% (threshold tuned here)": _ci(h[name]["best_tar_far"]), "d'": _f(h[name]["dprime"]["value"], 2)}
                                   for name in ("object_balanced", "pooled")])),
+          "Versions: **object_balanced** and **pooled** (defined above); **video_averaged** = metric per video, then the mean over videos with enough "
+          "pairs; **site_averaged** = metric per site (pooled over its videos), then the mean over sites (CI only with >= 5 sites); "
+          "**bin_balanced** = mean TAR over the supported delta-position bins.", "",
           f"Support: {h['support']['n_pos']:,} positive pairs, {h['support']['n_neg']:,} negative pairs, "
           f"{h['support']['n_objects']:,} objects, {h['support']['n_object_pairs']:,} distinct object pairs.", ""]
     if "validation" in s:
@@ -103,7 +106,8 @@ def build_report_from_dir(results_dir, data_root=None):
               f"Here {nneg / max(npos + nneg, 1):.0%} of the pairs are negatives, so plain accuracy mostly measures the negatives; "
               "**balanced accuracy** = (TAR + (1 - FAR)) / 2 is the comparable number. Fixed-threshold counts are exact.", ""]
         for key, label in (("bacc", "Balanced accuracy"), ("acc", "Accuracy")):
-            rows = [{"version": name, **{hdr(n): _ci(h[name][f"{key}_at_{n}"], 4) for n in ops}} for name in ("object_balanced", "pooled")]
+            rows = [{"version": name, **{hdr(n): _ci(h[name][f"{key}_at_{n}"], 4) for n in ops}}
+                    for name in ("object_balanced", "pooled", "video_averaged", "site_averaged") if f"{key}_at_{ops[0]}" in h.get(name, {})]
             L += [f"**{label}**", "", _md_table(pd.DataFrame(rows))]
         plot_accuracy(roc, {n: th[n] for n in (fixed if proto else ops)}, fig / "accuracy_vs_threshold.png", title=s.get("short_title", ""))
         L += ["![accuracy vs threshold](figures/accuracy_vs_threshold.png)", ""]
@@ -134,6 +138,9 @@ def build_report_from_dir(results_dir, data_root=None):
                 plot_heatmap(df, a, b, fig / png, n)
                 L += [f"![{png}](figures/{png})", ""]
 
+    if s.get("site_matches"):
+        L += ["## Site-level matching", "", f"Objects of the site against the gallery of all the site's videos (sampled queries, object x object "
+              f"similarity matrix, cross-video candidates; matches between videos have no ground truth): [{s['site_matches']}]({s['site_matches']})", ""]
     if s.get("matches"):
         L += ["## Object matches", "", f"One image per object with its top-10 positive and negative matches: [{s['matches']}]({s['matches']})", ""]
     elif (out / "matches").is_dir():
@@ -143,6 +150,23 @@ def build_report_from_dir(results_dir, data_root=None):
     if proto and s.get("threshold_units_skipped") and (out / "per_video.csv").exists():
         L += ["## Videos that could not be evaluated with this protocol", "",
               _md_table(pd.DataFrame([{"video": u["unit"], "site": u["site"], "reason": u["status"]} for u in s["threshold_units_skipped"]])), ""]
+
+    # ---------------- spread across videos and sites
+    def spread(csv, unit):
+        st = pd.read_csv(out / csv, index_col="metric")
+        pick = (["auc", "eer"] + [f"tar_at_{n}" for n in order] + [f"far_at_{n}" for n in order]
+                + [f"bacc_at_{n}" for n in ops] + [f"acc_at_{n}" for n in ops])
+        rows = [{"metric": m.replace("_at_", " @ "), f"{unit}s": int(st.loc[m, "count"]),
+                 "mean +- std": f"{st.loc[m, 'mean']:.4f} +- {0 if np.isnan(st.loc[m, 'std']) else st.loc[m, 'std']:.4f}",
+                 "median": _f(st.loc[m, "median"], 4), "min - max": f"{st.loc[m, 'min']:.4f} - {st.loc[m, 'max']:.4f}"}
+                for m in pick if m in st.index]
+        return _md_table(pd.DataFrame(rows))
+    if (out / "per_video_stats.csv").exists() and (out / "per_video.csv").exists():
+        L += ["## Spread across videos and sites", "",
+              "Every number below is computed inside one video (or one site) first, then summarised over the videos (sites): "
+              "how much the result varies from one camera to another.", "", "**Over videos**", "", spread("per_video_stats.csv", "video")]
+        if (out / "per_site_stats.csv").exists():
+            L += ["**Over sites**", "", spread("per_site_stats.csv", "site")]
 
     # ---------------- per site / per video (global report only)
     if (out / "per_site.csv").exists():
@@ -193,7 +217,7 @@ def build_report_from_dir(results_dir, data_root=None):
 
 
 VARIANTS = (("", "global threshold from validation (all difficulty criteria)"), ("__plain", "global threshold from validation"),
-            ("__thr-video", "threshold per video, held out"), ("__thr-site", "threshold per site, held out (leave-one-video-out)"),
+            ("__thr-video", "threshold per video, held out (2 folds of objects)"), ("__thr-site", "threshold per site, held out (leave-one-video-out)"),
             ("__thr-video-oracle", "threshold per video, ORACLE (tuned on the evaluated video)"),
             ("__thr-site-oracle", "threshold per site, ORACLE (tuned on the evaluated site)"))
 

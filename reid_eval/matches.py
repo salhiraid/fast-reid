@@ -20,6 +20,7 @@ import torch
 import torch.nn.functional as F
 
 GREEN, ORANGE, RED, GREY, INK, BG = (60, 150, 40), (0, 140, 255), (40, 40, 210), (170, 170, 170), (30, 30, 30), (245, 245, 245)
+PURPLE = (160, 50, 140)   # cross-video match above the site threshold: identity unknown, possible same vehicle
 
 
 def _slug(name):
@@ -50,10 +51,11 @@ def _row(canvas, y, title, query_tile, recs, sims, flags, tiles, tile, pad, extr
     for k, (r, im, s, f, lab) in enumerate(cols):
         x = pad + k * (tile + pad)
         canvas[y0:y0 + tile, x:x + tile] = im
-        color = INK if k == 0 else {"ok": GREEN, "FR": ORANGE, "FA": RED, "": GREY}[f]
+        color = INK if k == 0 else {"ok": GREEN, "FR": ORANGE, "FA": RED, "cand": PURPLE, "": GREY}[f]
         cv2.rectangle(canvas, (x - 1, y0 - 1), (x + tile, y0 + tile), color, 3 if k else 1)
         if k:
-            _put(canvas, f"{s:.3f}" + (f" {f}" if f in ("FR", "FA") else ""), (x + 1, y0 + tile + 11), 0.38, color if f in ("FR", "FA") else INK)
+            _put(canvas, f"{s:.3f}" + (" ?" if f == "cand" else f" {f}" if f in ("FR", "FA") else ""), (x + 1, y0 + tile + 11), 0.38,
+                 color if f in ("FR", "FA", "cand") else INK)
             if lab:
                 _put(canvas, lab[:16], (x + 1, y0 + tile + 22), 0.32, (90, 90, 90))
         else:
