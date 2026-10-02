@@ -195,6 +195,15 @@ def write_subset(agg: Aggregation, out, bins: Bins, thresholds, kind, title, ext
     return summary
 
 
+def _spread(df):
+    """Mean, std, median, min, max over the rows (videos or sites) of every numeric metric column (AUC, EER, TAR/FAR/accuracy...)."""
+    cols = [c for c in df.columns if c not in ("n_videos", "n_objects", "n_crops", "n_pos", "n_neg", "n_object_pairs", "confused_object_pairs")
+            and df[c].dtype.kind == "f" and not c.endswith(("_lo", "_hi"))]
+    st = df[cols].agg(["count", "mean", "std", "median", "min", "max"]).T
+    st.index.name = "metric"
+    return st
+
+
 def write_results(out, bins: Bins, thresholds, val_paths, test_paths, data_root=None, kind="full", per_subset=True, verbose=True,
                   check_thresholds=True, extra=None, title=None):
     """Everything except the encoding: reads only accumulators, thresholds and bins (reproducible from saved files)."""
@@ -227,6 +236,9 @@ def write_results(out, bins: Bins, thresholds, val_paths, test_paths, data_root=
         pv["report"] = [f"per_video/{vid_dirs[v]}/report.md" for v in pv["video_id"]]
     pv.to_csv(out / "per_video.csv", index=False)
     ps.to_csv(out / "per_site.csv", index=False)
+    _spread(pv).to_csv(out / "per_video_stats.csv")
+    if len(ps) >= 2:
+        _spread(ps).to_csv(out / "per_site_stats.csv")
     if per_subset:
         for site, d in site_dirs.items():
             sub = [x for x in test_s if x.site == site]
@@ -282,7 +294,7 @@ def _thr_row(neg_hist, bins: Bins):
 
 
 def run_threshold_modes(template_dir, split_path, data_root, bins_path, out_base, modes, device=None, verbose=True, per_subset=True,
-                        seed=0, min_negatives_strict=None):
+                        seed=0, kind="full"):
     """Evaluations with a threshold per video and/or per site (`modes`: video, site, video-oracle, site-oracle).
 
     Global-threshold evaluations (full / plain) use thresholds from the VALIDATION videos. These use the test videos' own
@@ -355,7 +367,7 @@ def run_threshold_modes(template_dir, split_path, data_root, bins_path, out_base
             print(f"WARNING: [thr-{mode}] no test video can be evaluated with this protocol "
                   f"({rows[0]['status'] if rows else 'no videos'}); variant skipped", file=sys.stderr)
             continue
-        out = Path(out_base) / f"{manifest['model_name']}__{manifest['preproc_mode']}" / f"{split['version']}__thr-{mode}"
+        out = Path(out_base) / f"{manifest['model_name']}__{manifest['preproc_mode']}" / (f"{split['version']}__thr-{mode}" + ("__plain" if kind == "plain" else ""))
         out.mkdir(parents=True, exist_ok=True)
         pd.DataFrame(rows).to_csv(out / "thresholds_per_unit.csv", index=False)
         med = {nm: float(np.median([r[f"thr_{nm}"] for r in used])) for nm in bins.op_names}
@@ -368,29 +380,30 @@ def run_threshold_modes(template_dir, split_path, data_root, bins_path, out_base
                       "n_calibration_negatives_median": float(np.median([r["n_calibration_negatives"] for r in used])),
                       "split_version": split["version"], "split_sha256": manifest["split_sha256"], "bins_version": bins.version,
                       "bins_sha256": bins.sha256, "model_name": manifest["model_name"], "preproc_mode": manifest["preproc_mode"],
-                      "kind": "plain"}
+                      "kind": kind}
         write_json_atomic(out / "thresholds.json", thresholds)
         # ---- pass 2: count at each unit's own thresholds
         test_paths = []
         for k, (vid, (table, fold)) in enumerate(units.items()):
             recs = by_video[vid]
             emb, meta = load_video(tdir, "test", vid, recs)
-            meta = meta.neutral()
+            if kind == "plain":
+                meta = meta.neutral()
             if fold is not None:
                 meta = meta.with_folds(fold)
-            acc = accumulate_video(emb, meta, bins, table, device, fail_pos_all=True)
+            acc = accumulate_video(emb, meta, bins, table, device, fail_pos_all=(kind == "plain"))
             acc = _finish_acc(acc, recs, meta, infos[vid], vid, "test")
             test_paths.append(_save_acc(acc, out / "acc" / "test" / f"{vid}.npz"))
             if verbose:
                 print(f"[acc thr-{mode}] {k + 1}/{len(units)} {vid}", file=sys.stderr)
-        write_json_atomic(out / "run.json", {"template_dir": str(tdir), "manifest": manifest, "split_file": str(split_path), "kind": "plain",
+        write_json_atomic(out / "run.json", {"template_dir": str(tdir), "manifest": manifest, "split_file": str(split_path), "kind": kind,
                                              "threshold_mode": mode, "data_root": str(data_root), "bins_file": str(bins_path),
                                              "bins_sha256": bins.sha256})
         extra = {"threshold_protocol": THR_PROTOCOLS[mode], "threshold_mode": mode, "threshold_units_used": thresholds["n_units_used"],
                  "threshold_units_skipped": thresholds["units_skipped"], "oracle": "oracle" in mode,
                  "n_calibration_negatives_median": thresholds["n_calibration_negatives_median"]}
         model = f"{manifest['model_name']} / {manifest['preproc_mode']}"
-        write_results(out, bins, thresholds, [], test_paths, data_root, kind="plain", per_subset=per_subset, verbose=verbose,
+        write_results(out, bins, thresholds, [], test_paths, data_root, kind=kind, per_subset=per_subset, verbose=verbose,
                       check_thresholds=False, extra=extra,
                       title=f"Verification report, threshold per {'video' if 'video' in mode else 'site'}"
                             f"{' (ORACLE, optimistic)' if 'oracle' in mode else ' (held out)'}: {model}")

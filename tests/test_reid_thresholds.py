@@ -65,7 +65,8 @@ def counts(s, same, thr):
 @pytest.fixture(scope="module")
 def held_out(setup):
     ds, split_p, split, tdir, tmp, lonely = setup
-    return evaluation.run_threshold_modes(tdir, split_p, ds, BINS, tmp / "res", ["video", "site"], device="cpu", verbose=False)
+    return evaluation.run_threshold_modes(tdir, split_p, ds, BINS, tmp / "res", ["video", "site"], device="cpu", verbose=False,
+                                          per_subset=False)
 
 
 def test_per_video_held_out_matches_brute_force(setup, held_out):
@@ -142,7 +143,7 @@ def test_reports_label_the_protocol(setup, held_out):
     for mode, out in held_out.items():
         text = (out / "report.md").read_text()
         assert "threshold protocol" in text and "HELD-OUT" in text and "ORACLE" not in text
-        assert (out / "per_site").is_dir() and (out / "per_video").is_dir() and (out / "figures" / "roc.png").exists()
+        assert (out / "figures" / "roc.png").exists()
         if mode == "site":                                                  # the single-video site is listed as skipped, with the reason
             assert "Videos that could not be evaluated" in text and "only test video of its site" in text
 
@@ -183,3 +184,55 @@ def test_variant_without_evaluable_units_is_skipped_not_fatal(setup, tmp_path, c
                                           per_subset=False)
     assert "site" not in outs and "video" in outs                            # per-site impossible, per-video still runs
     assert "variant skipped" in capsys.readouterr().err
+
+
+def test_threshold_evaluations_are_full_evaluations(setup, held_out):
+    """Per-video / per-site thresholds with ALL difficulty criteria, accuracies, and the means over videos and sites."""
+    ds, split_p, split, tdir, tmp, lonely = setup
+    for mode, out in held_out.items():
+        s = read_json(out / "summary.json")
+        assert s["kind"] == "full"
+        total = s["headline"]["support"]["n_pos"] + s["headline"]["support"]["n_neg"]
+        for axis in ("delta_position", "delta_azimuth", "occlusion", "keypoint_iou"):
+            df = pd.read_csv(out / f"bins_{axis}.csv")
+            assert (df.n_pos + df.n_neg).sum() == total, (mode, axis)             # every evaluated pair is in exactly one bin
+        known = pd.read_csv(out / "bins_delta_position.csv")
+        assert known[known.bin_delta_position != "unknown"].n_pos.sum() > 0       # real positions, not neutral metadata
+        assert "pooled_tar_at_5pct" in pd.read_csv(out / "bins_occlusion.csv").columns and "pooled_bacc_at_th0.5" in known.columns
+        for f in out.glob("heatmap_*.csv"):
+            assert (pd.read_csv(f).eval("n_pos + n_neg")).sum() == total
+        assert (out / "cells.csv").exists() and (out / "figures" / "curve_delta_position.png").exists()
+        assert (out / "figures" / "heatmap_delta_position_x_delta_azimuth__tar_1pct.png").exists()
+        text = (out / "report.md").read_text()
+        for needle in ("Difficulty axes", "## Accuracy", "## Spread across videos and sites", "site_averaged", "video_averaged"):
+            assert needle in text, (mode, needle)
+        assert "no pose" not in text
+        h = s["headline"]
+        assert {"object_balanced", "pooled", "video_averaged", "site_averaged"} <= set(h)
+        assert "acc_at_th0.5" in h["video_averaged"] and "bacc_at_1pct" in h["site_averaged"]
+        stats = pd.read_csv(out / "per_video_stats.csv", index_col="metric")
+        assert {"mean", "std", "median", "min", "max"} <= set(stats.columns) and "bacc_at_th0.5" in stats.index
+        assert (out / "per_site_stats.csv").exists()
+
+
+def test_site_averaged_is_the_mean_of_per_site_metrics(setup, held_out):
+    ds, split_p, split, tdir, tmp, lonely = setup
+    out = held_out["video"]
+    ps = pd.read_csv(out / "per_site.csv")                                    # per-site pooled TAR at 1 % FAR, one row per site
+    h = read_json(out / "summary.json")["headline"]["site_averaged"]
+    assert h["n_sites"] == len(ps)
+    assert h["tar_at_1pct"]["value"] == pytest.approx(ps["tar_at_1pct"].mean(), abs=1e-9)
+    assert h["bacc_at_th0.5"]["value"] == pytest.approx(ps["bacc_at_th0.5"].mean(), abs=1e-9)
+    pv = pd.read_csv(out / "per_video.csv")
+    hv = read_json(out / "summary.json")["headline"]["video_averaged"]
+    assert hv["tar_at_1pct"]["value"] == pytest.approx(pv["tar_at_1pct"].mean(), abs=1e-9)
+    st = pd.read_csv(out / "per_video_stats.csv", index_col="metric")
+    assert st.loc["tar_at_1pct", "mean"] == pytest.approx(pv["tar_at_1pct"].mean()) and st.loc["tar_at_1pct", "std"] == pytest.approx(pv["tar_at_1pct"].std())
+
+
+def test_per_site_and_per_video_reports_exist_for_threshold_runs(setup, tmp_path):
+    ds, split_p, split, tdir, tmp, lonely = setup
+    out = evaluation.run_threshold_modes(tdir, split_p, ds, BINS, tmp_path, ["site"], device="cpu", verbose=False)["site"]
+    for d in list((out / "per_site").iterdir())[:2] + list((out / "per_video").iterdir())[:2]:
+        assert (d / "report.md").exists() and (d / "bins_delta_position.csv").exists() and (d / "figures" / "roc.png").exists()
+        assert "threshold protocol" in (d / "report.md").read_text()

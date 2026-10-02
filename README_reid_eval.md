@@ -144,13 +144,22 @@ tuning on test, so the default protocols hold the calibration data out of the me
 | `<split>__thr-site` | leave-one-video-out: each test video is evaluated with the threshold set on the negatives of the OTHER test videos of its site. A site with one test video is skipped (the validation videos cannot be used: the split is site-disjoint) |
 | `<split>__thr-video-oracle`, `__thr-site-oracle` | opt-in (`--variants ... thr-video-oracle thr-site-oracle`). The threshold is set on the evaluated data itself (FAR is forced to the target): an optimistic **upper bound**, labelled as such in the report |
 
-They use the plain kind (no pose / occlusion / keypoint criteria) and the same FAR targets and fixed threshold; each has global,
-per-site and per-video tables/figures like the other evaluations. Per-unit thresholds and the number of calibration negatives are in
+They are **full evaluations**: all difficulty criteria (delta position / azimuth / occlusion / keypoints: bin tables, curves, heatmaps, joint cells),
+the five FAR targets plus the fixed threshold, accuracy and balanced accuracy everywhere, and global, per-site and per-video tables/figures,
+exactly like the global-threshold `full` evaluation but scored at each unit's own thresholds (`--thr-kind plain` gives global metrics only). The match images are
+only produced by the global `full` evaluation. Per-unit thresholds and the number of calibration negatives are in
 `thresholds_per_unit.csv`; videos that could not be evaluated are listed in the report. `<split>__threshold_comparison.md/.csv`
 (in the model folder) puts the protocols side by side. Caveats: a single video has few negatives, so strict-FAR thresholds (0.1 %) are noisy;
 and the rows do not evaluate exactly the same pairs, so differences mix the effect of the threshold with the change of pairs.
 Only these two run by default; choose with `--variants full plain thr-video thr-site`, or run them alone with
 `evaluate.py --templates ... --thr-mode video site`.
+
+### Means over videos and sites
+
+Every evaluation reports, besides the pooled and object-balanced numbers, **video_averaged** (metric per video, then the mean over videos with
+>= 30 positive and >= 30 negative pairs) and **site_averaged** (metric per site, pooled over its videos, then the mean over sites; CI only
+with >= 5 sites), for TAR, FAR, accuracy, balanced accuracy, AUC and EER. `per_video_stats.csv` / `per_site_stats.csv` give the mean, std,
+median, min and max of every metric over videos / sites, and the report has a "Spread across videos and sites" section.
 
 ## Per-object match images (top-10 positives and negatives)
 

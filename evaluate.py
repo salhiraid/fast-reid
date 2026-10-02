@@ -36,6 +36,8 @@ def main(argv=None):
     ap.add_argument("--report-only", metavar="RESULTS_DIR")
     ap.add_argument("--thr-mode", nargs="+", choices=["video", "site", "video-oracle", "site-oracle"], default=None,
                     help="evaluate with a threshold per video / per site instead of the global validation threshold (test videos only)")
+    ap.add_argument("--thr-kind", choices=["full", "plain"], default="full",
+                    help="with --thr-mode: full = all difficulty criteria (default), plain = global metrics only")
     ap.add_argument("--plain", action="store_true", help="no difficulty criteria: global / per-site / per-video metrics only")
     ap.add_argument("--no-per-subset", action="store_true", help="skip the per-site and per-video reports (faster)")
     ap.add_argument("--match-sheets", dest="match_sheets", action="store_true", default=None, help="force per-object match images (default: on for full, off for plain)")
@@ -66,7 +68,7 @@ def main(argv=None):
         ap.error("--templates is required")
     if a.thr_mode:
         outs = evaluation.run_threshold_modes(a.templates, a.split, a.data, a.bins, a.out, a.thr_mode, a.device,
-                                              per_subset=not a.no_per_subset)
+                                              per_subset=not a.no_per_subset, kind=a.thr_kind)
         for m, d in outs.items():
             print(f"[{m}] results in {d}")
         return 0

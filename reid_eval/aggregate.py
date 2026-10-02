@@ -293,10 +293,31 @@ class Aggregation:
                     e["ci_lo"], e["ci_hi"] = float(row[f"video_avg_{k}_lo"]), float(row[f"video_avg_{k}_hi"])
                 out["video_averaged"][k] = e
             out["video_averaged"]["n_videos_used"] = int(row["video_avg_n_videos"])
+        out["site_averaged"] = self.site_averaged()
         out["bin_balanced"] = self.bin_balanced()
         out["support"] = {k: (int(row[k]) if k in row else None) for k in ("n_pos", "n_neg", "n_objects", "n_object_pairs")}
         out["far_targets"] = dict(zip(self.bins.thr_names, self.bins.far_targets))
         out["fixed_thresholds"] = dict(zip(self.bins.fixed_names, self.bins.fixed_thresholds))
+        return out
+
+    def site_averaged(self):
+        """Metric per SITE (pooled over the videos of the site), then the mean over sites with enough pairs. {} with < 2 sites.
+        CI: bootstrap over sites, only with >= MIN_VIDEOS_FOR_CI sites."""
+        sites = sorted({v.site for v in self.s})
+        if len(sites) < 2:
+            return {}
+        stacked = stack_packs([add_all([v.packs[()] for v in self.s if v.site == st]) for st in sites])
+        pv = named(M.compute(stacked, False, self.bins.best_far), self.bins)                    # (n_sites,)
+        gate = (pv["n_pos"] >= self.bins.vavg_pos) & (pv["n_neg"] >= self.bins.vavg_neg)
+        counts = bootstrap_counts(len(sites), self.bins.boot_resamples, self.bins.boot_seed + 1) if len(sites) >= MIN_VIDEOS_FOR_CI else None
+        out = {}
+        for k in metric_names(self.bins):
+            mean, _ = video_avg(pv[k], gate)
+            e = {"value": float(mean)}
+            if counts is not None:
+                e["ci_lo"], e["ci_hi"] = (float(x) for x in ci(video_avg(pv[k], gate, counts), self.bins.boot_level))
+            out[k] = e
+        out["n_sites_used"], out["n_sites"] = int(gate.sum()), len(sites)
         return out
 
     def bin_balanced(self):
