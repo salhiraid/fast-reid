@@ -17,7 +17,7 @@ from .all_methods import build_all_methods
 from .common import read_json, sha256_file
 from .model_compare import build_model_comparison
 
-DEFAULT_VARIANTS = ("full", "plain", "thr-video", "thr-site", "site-gallery")
+DEFAULT_VARIANTS = ("full", "plain", "thr-video", "thr-site", "site-gallery", "thr-global-oracle")
 ALL_VARIANTS = DEFAULT_VARIANTS + ("thr-video-oracle", "thr-site-oracle", "site-gallery-oracle")
 
 

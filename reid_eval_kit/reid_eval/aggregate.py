@@ -153,7 +153,7 @@ def named(m, bins: Bins):
     """Rename tar_q0 -> tar_at_0.1pct, acc_q5 -> acc_at_th0.5, etc. (FAR thresholds first, then fixed thresholds)."""
     out = dict(m)
     for q, t in enumerate(bins.op_names):
-        for base in ("tar", "far", "frr", "acc", "bacc"):
+        for base in ("tar", "far", "frr", "acc", "bacc", "prec"):
             out[f"{base}_at_{t}"] = out.pop(f"{base}_q{q}")
     return out
 
@@ -174,7 +174,7 @@ def video_avg(per_video_metrics, gate, counts=None):
 
 def metric_names(bins: Bins):
     ops = bins.op_names
-    return ([f"{b}_at_{n}" for b in ("tar", "far", "acc", "bacc") for n in ops] + ["auc", "eer"])
+    return ([f"{b}_at_{n}" for b in ("tar", "far", "acc", "bacc", "prec") for n in ops] + ["auc", "eer"])
 
 
 # ------------------------------------------------------------------ tables
@@ -184,7 +184,7 @@ def bin_table(bins: Bins, keep, pooled, stacked=None, counts=None, n_obj_pos=Non
     mp, mb = named(M.compute(pooled, False, ft), bins), named(M.compute(pooled, True, ft), bins)
     shape = mp["n_pos"].shape
     names = bins.op_names
-    base = ([f"{b}_at_{n}" for b in ("tar", "far", "frr", "acc", "bacc") for n in names]
+    base = ([f"{b}_at_{n}" for b in ("tar", "far", "frr", "acc", "bacc", "prec") for n in names]
             + ["auc", "eer", "best_tar_far", "dprime", "pos_mean", "pos_median", "pos_p5", "pos_p95",
                "neg_mean", "neg_median", "neg_p5", "neg_p95"])
     cols = {"n_pos": mp["n_pos"], "n_neg": mp["n_neg"], "balanced_n_pos": mb["n_pos"], "balanced_n_neg": mb["n_neg"]}
@@ -376,6 +376,7 @@ class Aggregation:
         for n in names:
             row[f"far_at_{n}"] = t[f"pooled_far_at_{n}"]
             row[f"acc_at_{n}"], row[f"bacc_at_{n}"] = t[f"pooled_acc_at_{n}"], t[f"pooled_bacc_at_{n}"]
+            row[f"prec_at_{n}"], row[f"balanced_prec_at_{n}"] = t[f"pooled_prec_at_{n}"], t[f"balanced_prec_at_{n}"]
             row[f"balanced_acc_at_{n}"], row[f"balanced_bacc_at_{n}"] = t[f"balanced_acc_at_{n}"], t[f"balanced_bacc_at_{n}"]
         row["confused_object_pairs"] = int(sum((s.pair_med > s.strict_thr_of_pairs()).sum() for s in summaries))
         row["n_object_pairs"] = int(sum(len(s.pair_med) for s in summaries))

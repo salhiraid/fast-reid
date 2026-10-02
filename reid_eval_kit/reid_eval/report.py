@@ -93,6 +93,28 @@ def build_report_from_dir(results_dir, data_root=None):
         L += ["Validation check (pooled): " + ", ".join(f"FAR {pretty(n)} = {v[f'pooled_far_at_{n}']:.5f}" for n in order)
               + f", AUC = {v['pooled_auc']:.4f}.", ""]
 
+    # ---------------- operating points: threshold, measured FAR, recall (TAR), precision, accuracy, balanced accuracy
+    if f"prec_at_{ops[0]}" in h["pooled"]:
+        unit_thr = {}
+        if proto and (out / "thresholds_per_unit.csv").exists():
+            tu = pd.read_csv(out / "thresholds_per_unit.csv")
+            tu = tu[tu.status == "used"]
+            unit_thr = {n: (tu[f"thr_{n}"].median(), tu[f"thr_{n}"].min(), tu[f"thr_{n}"].max()) for n in ops if f"thr_{n}" in tu}
+
+        def thr_txt(n):
+            if n in unit_thr:
+                m, lo_, hi_ = unit_thr[n]
+                return f"{m:.3f} [{lo_:.3f}, {hi_:.3f}]"
+            return f"{th[n]:.4f}"
+        L += ["## Operating points", "",
+              "Threshold = cosine similarity above which a pair is accepted" + (" (median [min, max] over the units, each has its own)" if proto else "")
+              + ". Recall = TAR. Precision = accepted pairs that are the same vehicle; it depends on the share of negative pairs, so compare "
+              "balanced accuracy and TAR across methods.", ""]
+        for ver, label in (("object_balanced", "object-balanced"), ("pooled", "pooled over all pairs")):
+            L += [f"**{label}**", "", _md_table(pd.DataFrame([{
+                "operating point": pretty(n), "threshold": thr_txt(n), "measured FAR": f"{h['pooled'][f'far_at_{n}']['value']:.5f}",
+                "recall (TAR)": _f(h[ver][f"tar_at_{n}"]["value"], 4), "precision": _f(h[ver][f"prec_at_{n}"]["value"], 4),
+                "accuracy": _f(h[ver][f"acc_at_{n}"]["value"], 4), "balanced accuracy": _f(h[ver][f"bacc_at_{n}"]["value"], 4)} for n in ops]))]
     roc = pd.read_csv(out / "roc.csv")
     plot_roc(roc, h, fig / "roc.png", names, title=s.get("short_title", ""))
     L += ["## ROC", "", "![roc](figures/roc.png)", ""]
@@ -217,13 +239,26 @@ def build_report_from_dir(results_dir, data_root=None):
 
 
 VARIANTS = (("", "global threshold from validation (all difficulty criteria)"), ("__plain", "global threshold from validation"),
+            ("__thr-global-oracle", "global threshold ORACLE (set on all test videos pooled; optimistic)"),
             ("__thr-video", "threshold per video, held out (2 folds of objects)"), ("__thr-site", "threshold per site, held out (leave-one-video-out)"),
+            ("__site-gallery", "site matching: gallery = whole site, threshold per site, held out"),
             ("__thr-video-oracle", "threshold per video, ORACLE (tuned on the evaluated video)"),
-            ("__thr-site-oracle", "threshold per site, ORACLE (tuned on the evaluated site)"))
+            ("__thr-site-oracle", "threshold per site, ORACLE (tuned on the evaluated site)"),
+            ("__site-gallery-oracle", "site matching, threshold per site, ORACLE (tuned on the evaluated site)"))
+
+
+def _threshold_basis(key_suffix, s):
+    if key_suffix in ("", "__plain"):
+        return "one global threshold per FAR target, from the validation videos (exact)"
+    if "global-oracle" in key_suffix:
+        return "one global threshold per FAR target, from all test videos pooled (exact, ORACLE)"
+    return "median over the " + s.get("unit", "video") + "s (each has its own threshold)" + (" (ORACLE)" if s.get("oracle") else "")
 
 
 def write_variant_comparison(model_dir, split_version):
-    """<model_dir>/<split>__threshold_comparison.md/.csv: object-balanced TAR at every FAR for each threshold protocol that was run."""
+    """<model_dir>/<split>__threshold_comparison.md/.csv: every evaluation method that exists in the model folder, one row per method, with
+    TAR (= recall), measured FAR, accuracy, balanced accuracy, precision and the threshold at every FAR target and at the fixed threshold.
+    Rebuilt at the end of every evaluation function, so it is complete whatever the order the variants were run in."""
     model_dir = Path(model_dir)
     rows, seen_global = [], False
     for suffix, label in VARIANTS:
@@ -236,29 +271,64 @@ def write_variant_comparison(model_dir, split_version):
             seen_global = True
         s = read_json(d / "summary.json")
         h = s["headline"]
+        ob, po = h["object_balanced"], h["pooled"]
         names = sorted(s["far_names"], key=lambda n: float(n.replace("pct", "")))
+        fixed = s.get("fixed_names", [])
         row = {"variant": label, "folder": d.name, "videos evaluated": s["n_videos"],
                "pos pairs": h["support"]["n_pos"], "neg pairs": h["support"]["n_neg"]}
         for n in names:
-            row[f"TAR @ {pretty(n)}"] = h["object_balanced"][f"tar_at_{n}"]["value"]
+            row[f"TAR @ {pretty(n)}"] = ob[f"tar_at_{n}"]["value"]
         for n in names:
-            row[f"measured FAR @ {pretty(n)}"] = h["pooled"][f"far_at_{n}"]["value"]
-        for n in s.get("fixed_names", []):
-            row[f"balanced acc @ {pretty(n)}"] = h["object_balanced"][f"bacc_at_{n}"]["value"]
+            row[f"measured FAR @ {pretty(n)}"] = po[f"far_at_{n}"]["value"]
+        for n in fixed:
+            row[f"balanced acc @ {pretty(n)}"] = ob[f"bacc_at_{n}"]["value"]
+        # ---- added: recall (= TAR), precision, accuracy, balanced accuracy, threshold at every FAR; the same at the fixed threshold
+        for n in names:
+            row[f"recall @ {pretty(n)}"] = ob[f"tar_at_{n}"]["value"]
+        for n in names:
+            row[f"precision @ {pretty(n)}"] = ob[f"prec_at_{n}"]["value"]
+        for n in names:
+            row[f"pooled precision @ {pretty(n)}"] = po[f"prec_at_{n}"]["value"]
+        for n in names:
+            row[f"accuracy @ {pretty(n)}"] = ob[f"acc_at_{n}"]["value"]
+        for n in names:
+            row[f"pooled accuracy @ {pretty(n)}"] = po[f"acc_at_{n}"]["value"]
+        for n in names:
+            row[f"balanced acc @ {pretty(n)}"] = ob[f"bacc_at_{n}"]["value"]
+        for n in names:
+            row[f"threshold @ {pretty(n)}"] = s["thresholds"][n]
+        for n in fixed:
+            row[f"recall @ {pretty(n)}"] = ob[f"tar_at_{n}"]["value"]
+            row[f"precision @ {pretty(n)}"] = ob[f"prec_at_{n}"]["value"]
+            row[f"pooled precision @ {pretty(n)}"] = po[f"prec_at_{n}"]["value"]
+            row[f"accuracy @ {pretty(n)}"] = ob[f"acc_at_{n}"]["value"]
+            row[f"pooled accuracy @ {pretty(n)}"] = po[f"acc_at_{n}"]["value"]
+            row[f"measured FAR @ {pretty(n)}"] = po[f"far_at_{n}"]["value"]
+        row["unit"] = s.get("unit", "video")
+        row["threshold basis"] = _threshold_basis(suffix, s)
         rows.append(row)
-    if len(rows) < 2:
+    if not rows:
         return None
     df = pd.DataFrame(rows)
     df.to_csv(model_dir / f"{split_version}__threshold_comparison.csv", index=False)
-    show = df.copy()
-    for c in show.columns[5:]:
-        show[c] = show[c].map(lambda x: f"{x:.4f}")
-    show["pos pairs"], show["neg pairs"] = show["pos pairs"].map("{:,}".format), show["neg pairs"].map("{:,}".format)
-    text = ["# Threshold protocols side by side", "",
-            "Object-balanced TAR at each FAR target, and the FAR actually measured (pooled). **Read with care**: the rows do not evaluate exactly "
-            "the same pairs. The held-out per-video protocol evaluates only pairs inside each half of a video; the per-site protocol skips "
-            "sites with a single test video; ORACLE rows tune the threshold on the data they are measured on (FAR forced to the target, "
-            "optimistic). Differences between rows therefore mix the effect of the threshold with a change of the evaluated pairs.", "",
-            _md_table(show.drop(columns=["folder"]))]
+
+    def block(title, cols, digits=4):
+        sub = df[["variant"] + [c for c in df.columns if any(c.startswith(p) for p in cols)]].copy()
+        for c in sub.columns[1:]:
+            sub[c] = sub[c].map(lambda x, d=digits: f"{x:.{d}f}")
+        return [f"## {title}", "", _md_table(sub)]
+    head = df[["variant", "videos evaluated", "pos pairs", "neg pairs", "unit"]].copy()
+    head["pos pairs"], head["neg pairs"] = head["pos pairs"].map("{:,}".format), head["neg pairs"].map("{:,}".format)
+    text = ["# Evaluation methods side by side (one row per method)", "",
+            "Object-balanced values unless marked *pooled* (pooled = every pair counts equally); measured FAR is pooled. Recall = TAR. "
+            "**Read with care**: the rows do not evaluate exactly the same pairs (the held-out per-video protocol only evaluates pairs inside each "
+            "half of a video; site matching adds every cross-video pair of the site as a negative; a site with a single video cannot be "
+            "evaluated per site), ORACLE rows tune the threshold on the data they are measured on (optimistic), and precision / plain accuracy "
+            "depend on the share of positive pairs: compare **balanced accuracy** and TAR at a given measured FAR across methods.", "",
+            "## Methods", "", _md_table(head)]
+    text += block("TAR (= recall) and measured FAR at each FAR target", ("TAR @", "measured FAR @"), 4)
+    text += block("Accuracy and balanced accuracy", ("accuracy @", "pooled accuracy @", "balanced acc @"), 4)
+    text += block("Precision and recall", ("precision @", "pooled precision @", "recall @"), 4)
+    text += block("Threshold (cosine similarity) at each FAR target", ("threshold @",), 4)
     (model_dir / f"{split_version}__threshold_comparison.md").write_text("\n".join(text), encoding="utf-8")
     return model_dir / f"{split_version}__threshold_comparison.md"

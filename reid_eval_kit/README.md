@@ -23,11 +23,14 @@ python run_eval.py --compare results/ --reference mymodel__unpad_stretch      # 
 |---|---|
 | `full` | one threshold per FAR target (0.1 / 1 / 2 / 5 / 10 %) + a fixed threshold 0.5, set on the **validation** videos; pairs within each video; with the difficulty bins (delta position, delta azimuth, occlusion, keypoints) |
 | `plain` | the same without the difficulty criteria (global, per site, per video) |
+| `thr-global-oracle` | the same single global threshold, but set on **all test videos pooled** (optimistic; the static counterpart of the oracles below, on the same pairs as `full`) |
 | `thr-video`, `thr-site` | a threshold per video / per site, **held out** (no tuning on the measured pairs); within-video pairs |
 | `site-gallery` | matching against the **whole site** (all crops of all the site's videos; cross-video pairs assumed negative), threshold per site, held out |
 | `*-oracle` (opt-in, `--variants ...`) | the same thresholds tuned on the evaluated data: optimistic upper bounds |
 
-Per model: `results/<model>__<mode>/<split>[__variant]/report.md` (metrics, accuracy, curves, per-site/per-video tables, failures, match images) and
+Per model: `results/<model>__<mode>/<split>__threshold_comparison.csv` (one row per method: TAR / recall, precision, accuracy, balanced accuracy and the
+threshold at every FAR target 0.1-10 %, refreshed after every evaluation so it is complete in any run order) and
+`results/<model>__<mode>/<split>[__variant]/report.md` (metrics, accuracy, curves, per-site/per-video tables, failures, match images) and
 `results/<model>__<mode>/<split>__all_methods/report.md` (all methods side by side, averaged over sites).
 **Model comparison:** `results/comparison_<split>/report.md`: for every method, a table with one row per model (TAR at each FAR, AUC, EER, accuracy /
 balanced accuracy, averaged over sites ± std and pooled with CIs; best value in bold), a paired bootstrap of the differences to a reference model,

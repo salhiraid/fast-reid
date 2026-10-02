@@ -39,7 +39,7 @@ def main(argv=None):
     ap.add_argument("--report-only", metavar="RESULTS_DIR")
     ap.add_argument("--all-methods", metavar="MODEL_RESULTS_DIR", help="build the all-methods comparison (tables + curves) for results/<model>__<mode>")
     ap.add_argument("--split-version", default=None, help="with --all-methods: split version folder prefix (default: from --split, else v1)")
-    ap.add_argument("--thr-mode", nargs="+", choices=["video", "site", "video-oracle", "site-oracle", "site-gallery", "site-gallery-oracle"], default=None,
+    ap.add_argument("--thr-mode", nargs="+", choices=["video", "site", "video-oracle", "site-oracle", "global-oracle", "site-gallery", "site-gallery-oracle"], default=None,
                     help="evaluate with a threshold per video / per site instead of the global validation threshold (test videos only)")
     ap.add_argument("--thr-kind", choices=["full", "plain"], default="full",
                     help="with --thr-mode: full = all difficulty criteria (default), plain = global metrics only")

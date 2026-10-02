@@ -26,8 +26,8 @@ def main(argv=None):
     ap.add_argument("--weights", default=None)
     ap.add_argument("--split", default="splits/eval_split_v1.json")
     ap.add_argument("--bins", default="configs/bins_v3.yaml", help="FAR targets 0.1, 1, 2, 5, 10 %%")
-    ap.add_argument("--variants", nargs="+", choices=["full", "plain", "thr-video", "thr-site", "site-gallery", "thr-video-oracle", "thr-site-oracle", "site-gallery-oracle"],
-                    default=["full", "plain", "thr-video", "thr-site", "site-gallery"],
+    ap.add_argument("--variants", nargs="+", choices=["full", "plain", "thr-video", "thr-site", "site-gallery", "thr-global-oracle", "thr-video-oracle", "thr-site-oracle", "site-gallery-oracle"],
+                    default=["full", "plain", "thr-video", "thr-site", "site-gallery", "thr-global-oracle"],
                     help="thr-*: threshold per video / per site (held out); the -oracle ones are tuned on the evaluated data (optimistic, opt-in)")
     ap.add_argument("--no-all-methods", action="store_true", help="skip the final all-methods comparison (tables + curves)")
     ap.add_argument("--no-per-subset", action="store_true", help="skip the per-site and per-video reports (faster)")
