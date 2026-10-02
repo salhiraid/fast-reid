@@ -1,0 +1,22 @@
+# Same bins as bins_v1.yaml, but TAR is reported at several FAR operating points (thresholds all set on validation negatives).
+# FAR 1e-3 = 0.1 %, 1e-2 = 1 %, 1e-1 = 10 %  (the "1e-2" and "1 %" / "1e-1" and "10 %" requests are the same points).
+# Edges are lower-inclusive / upper-exclusive; the last bin also includes its upper edge.
+# FROZEN once results exist: change = new file (bins_v3.yaml), never edit.
+version: v2
+
+delta_position_m: [0, 1, 3, 5, 10, 20, 40, .inf]
+delta_azimuth_deg: [0, 5, 10, 20, 45, 90, 180]
+occlusion: [both_visible, one_occluded, both_occluded]
+shared_keypoints_iou: [0, 0.25, 0.5, 0.75, 1.0]
+min_visible_keypoints: [0, 4, 8, 12, 16, .inf]
+
+far_targets: [1.0e-3, 1.0e-2, 2.0e-2, 5.0e-2, 1.0e-1]   # 0.1 %, 1 %, 2 %, 5 %, 10 %
+best_tar_far_target: 1.0e-2                              # "best TAR" = TAR if the threshold were tuned inside the bin at this FAR
+heatmap_far_targets: [1.0e-3, 1.0e-2]                    # heatmap PNGs are drawn for these operating points
+
+min_support:
+  positive_pairs: 30
+  objects: 10
+video_average_min_pairs: {positive: 30, negative: 30}
+
+bootstrap: {resamples: 1000, seed: 0, level: 0.95}
