@@ -158,7 +158,15 @@ def run(template_dir, split_path, data_root, bins_path, out_base, device=None, v
     write_json_atomic(out / "run.json", {"template_dir": str(tdir), "manifest": manifest, "split_file": str(split_path), "kind": kind,
                                          "data_root": str(data_root), "bins_file": str(bins_path), "bins_sha256": bins.sha256})
     write_results(out, bins, thresholds, val_paths, test_paths, data_root, kind=kind, per_subset=per_subset)
+    _refresh_variant_comparison(out.parent, split["version"])
     return out
+
+
+def _refresh_variant_comparison(model_dir, split_version):
+    """Rebuild <split>__threshold_comparison.* from every variant folder that exists NOW: called at the end of every evaluation function, so
+    the table is complete whatever the order in which the variants were run (separately or by run_full_eval)."""
+    from .report import write_variant_comparison
+    write_variant_comparison(model_dir, split_version)
 
 
 def _slug(name, used):
@@ -220,7 +228,7 @@ def write_results(out, bins: Bins, thresholds, val_paths, test_paths, data_root=
     if val_s:
         vh = Aggregation(val_s, bins, thresholds).table(()).iloc[0]
         summary["validation"] = {"pooled_auc": float(vh["pooled_auc"]), "pooled_eer": float(vh["pooled_eer"]),
-                                 **{f"pooled_{b}_at_{n}": float(vh[f"pooled_{b}_at_{n}"]) for n in names for b in ("tar", "far", "acc", "bacc")}}
+                                 **{f"pooled_{b}_at_{n}": float(vh[f"pooled_{b}_at_{n}"]) for n in names for b in ("tar", "far", "acc", "bacc", "prec")}}
         write_json_atomic(out / "summary.json", summary)
     if kind == "full":
         agg.cells_table().to_csv(out / "cells.csv", index=False)
@@ -282,6 +290,10 @@ def write_results(out, bins: Bins, thresholds, val_paths, test_paths, data_root=
 
 # ----------------------------------------------------------------------------- per-video / per-site thresholds
 THR_PROTOCOLS = {
+    "global-oracle": ("ORACLE GLOBAL threshold (the same for every video): set on the negative pairs of ALL test videos pooled, including the "
+                      "evaluated ones, then used unchanged on every video (matching within each video). The static counterpart of the per-video / "
+                      "per-site thresholds; OPTIMISTIC because it is tuned on the data it is measured on. The honest global threshold (set on the "
+                      "validation videos) is the `global` evaluation."),
     "video": ("HELD-OUT per-video thresholds: the objects of each video are split in two folds; each fold is evaluated with the "
               "threshold set on the negative pairs of the OTHER fold (pairs across the two folds are not evaluated). "
               "Videos with fewer than 4 objects cannot be split and are skipped."),
@@ -380,6 +392,9 @@ def run_threshold_modes(template_dir, split_path, data_root, bins_path, out_base
                         table, n_cal = [_thr_row(h, bins) for h in hists], [int(h.sum()) for h in hists]
             elif mode == "video-oracle":
                 table, n_cal = [_thr_row(own[vid], bins)], [int(own[vid].sum())]
+            elif mode == "global-oracle":
+                allneg = sum(own.values())
+                table, n_cal = [_thr_row(allneg, bins)], [int(allneg.sum())]
             else:
                 others = [u for u in site_videos[site_of[vid]] if mode == "site-oracle" or u != vid]
                 if not others:
@@ -443,11 +458,10 @@ def run_threshold_modes(template_dir, split_path, data_root, bins_path, out_base
         model = f"{manifest['model_name']} / {manifest['preproc_mode']}"
         write_results(out, bins, thresholds, [], test_paths, data_root, kind=kind, per_subset=per_subset, verbose=verbose,
                       check_thresholds=False, extra=extra,
-                      title=f"Verification report, threshold per {'video' if 'video' in mode else 'site'}"
+                      title=f"Verification report, {'global threshold on all test videos' if mode == 'global-oracle' else 'threshold per ' + ('video' if 'video' in mode else 'site')}"
                             f"{' (ORACLE, optimistic)' if 'oracle' in mode else ' (held out)'}: {model}")
         out_dirs[mode] = out
-    from .report import write_variant_comparison
-    write_variant_comparison(Path(out_base) / f"{manifest['model_name']}__{manifest['preproc_mode']}", split["version"])
+    _refresh_variant_comparison(Path(out_base) / f"{manifest['model_name']}__{manifest['preproc_mode']}", split["version"])
     return out_dirs
 
 
@@ -578,4 +592,5 @@ def run_site_gallery(template_dir, split_path, data_root, bins_path, out_base, m
                       check_thresholds=False, extra=extra, subsets=("site",),
                       title=f"Site matching (gallery = whole site), threshold per site {'(ORACLE, optimistic)' if 'oracle' in mode else '(held out)'}: {model}")
         out_dirs[mode] = out
+    _refresh_variant_comparison(Path(out_base) / f"{manifest['model_name']}__{manifest['preproc_mode']}", split["version"])
     return out_dirs

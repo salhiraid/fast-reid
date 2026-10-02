@@ -173,6 +173,26 @@ and the rows do not evaluate exactly the same pairs, so differences mix the effe
 Only these two run by default; choose with `--variants full plain thr-video thr-site`, or run them alone with
 `evaluate.py --templates ... --thr-mode video site`.
 
+### The methods table (`<split>__threshold_comparison.csv/.md`), precision / recall / thresholds, global-threshold rows
+
+Every evaluation function refreshes `results/<model>__<mode>/<split>__threshold_comparison.csv` and `.md` when it ends, so the table is complete
+**whatever the order the variants were run in** (separately with `evaluate.py`, or by `run_full_eval.py` / `run_eval.py`). One row per method:
+
+* `global threshold from validation`: **one global threshold per FAR target for the whole dataset**, set on the validation videos, matching within each
+  video (the `full` / `plain` evaluations: not dynamic per site or per video);
+* `global threshold ORACLE` (`thr-global-oracle`, default): the same single global threshold but set on **all test videos pooled** (optimistic: the
+  static counterpart of the per-video / per-site oracles, on exactly the same pairs as the validation-based global one);
+* per video / per site (held out), site matching, and the per-video / per-site / site-matching oracles.
+
+Columns: the original ones (`variant, folder, videos evaluated, pos pairs, neg pairs, TAR @ FAR 0.1% ... 10%, measured FAR @ FAR 0.1% ... 10%,
+balanced acc @ threshold 0.5`) followed by, for **every FAR target (0.1, 1, 2, 5, 10 %)**: `recall` (= TAR), `precision`, `pooled precision`, `accuracy`,
+`pooled accuracy`, `balanced acc` and **`threshold`** (cosine similarity; exact for the global rows, median over the units for per-video / per-site rows);
+for the fixed threshold 0.5: accuracy, precision, recall, measured FAR; then `unit` (video or site) and `threshold basis`. Precision and plain accuracy
+depend on the share of positive pairs (site matching has many more negatives): compare TAR at the measured FAR and balanced accuracy across methods.
+Every evaluation report also has an **Operating points** table (threshold, measured FAR, recall, precision, accuracy, balanced accuracy for each FAR
+target and for threshold 0.5), the all-methods report has precision and threshold tables, and the model comparison has accuracy, balanced accuracy,
+precision, recall and threshold tables per method.
+
 ### Site matching (gallery = the whole site) and the all-methods comparison
 
 `site-gallery` (default in `run_full_eval.py`, or `evaluate.py --thr-mode site-gallery`) evaluates **matching against the whole site**: all crops

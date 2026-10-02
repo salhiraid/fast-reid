@@ -30,6 +30,7 @@ BLUE, ORANGE, AQUA, VIOLET = "#2a78d6", "#eb6834", "#1baf7a", "#4a3aa7"
 # key, folder suffixes (first existing wins), label, short label, matching, colour, oracle
 METHODS = (
     ("global", ("__plain", ""), "Global threshold (validation)", "Global threshold", "within each video", BLUE, False),
+    ("global-oracle", ("__thr-global-oracle",), "Global threshold ORACLE, set on all test videos (optimistic)", "Global, oracle", "within each video", BLUE, True),
     ("thr-video", ("__thr-video",), "Threshold per video (held out)", "Threshold per video", "within each video", ORANGE, False),
     ("thr-site", ("__thr-site",), "Threshold per site (held out, leave-one-video-out)", "Threshold per site", "within each video", AQUA, False),
     ("site-gallery", ("__site-gallery",), "Site matching: gallery = whole site, threshold per site (held out)", "Site matching", "whole-site gallery (cross-video pairs = negatives)", VIOLET, False),
@@ -46,6 +47,7 @@ class Method:
         self.per_site = pd.read_csv(self.dir / "per_site.csv")
         self.far_names = self.summary["far_names"]
         self.fixed = self.summary.get("fixed_names", [])
+        self.thr = self.summary.get("thresholds", {})          # exact for the global methods, median over the units for per-unit ones
         self.ops = self.far_names + self.fixed
         self.far_order = sorted(self.far_names, key=lambda n: float(n.replace("pct", "")))
         self._curves = None
@@ -127,6 +129,13 @@ def tables(methods):
         out.append((title, pd.DataFrame(rows)))
     rows = [{"method": m.short, **{pretty(n): _cell(m, f"far_at_{n}", f"far_at_{n}", 4) for n in order}} for m in methods]
     out.append(("Measured FAR at each target (site-averaged; the target is in the header)", pd.DataFrame(rows)))
+    if all(f"prec_at_{ops[0]}" in m.per_site for m in methods):
+        rows = [{"method": m.short, **{pretty(n): _cell(m, f"prec_at_{n}", f"prec_at_{n}") for n in ops}} for m in methods]
+        out.append(("Precision at every operating point (site-averaged; recall = TAR, see the first table). Precision depends on the share of "
+                    "negative pairs: compare it with care across methods", pd.DataFrame(rows)))
+    rows = [{"method": m.short, **{pretty(n): f"{m.thr[n]:.3f}" for n in ops if n in m.thr},
+             "basis": "exact" if m.key in ("global", "global-oracle") else "median over units"} for m in methods]
+    out.append(("Threshold (cosine similarity) at each operating point: exact for the global methods, median over the videos / sites for the others", pd.DataFrame(rows)))
     rows = []
     for m in methods:
         for ver in ("object_balanced", "pooled"):
@@ -150,9 +159,11 @@ def summary_csv(methods):
     for m in methods:
         row = {"method": m.key, "label": m.label, "matching": m.matching, "oracle": m.oracle, "n_sites": len(m.per_site)}
         for n in m.ops:
-            for b in ("tar", "far", "acc", "bacc"):
-                row[f"{b}_at_{n}"] = m.site_mean(f"{b}_at_{n}", f"{b}_at_{n}")
-                row[f"{b}_at_{n}_std_over_sites"] = m.site_std(f"{b}_at_{n}")
+            for b in ("tar", "far", "acc", "bacc", "prec"):
+                if f"{b}_at_{n}" in m.per_site:
+                    row[f"{b}_at_{n}"] = m.site_mean(f"{b}_at_{n}", f"{b}_at_{n}")
+                    row[f"{b}_at_{n}_std_over_sites"] = m.site_std(f"{b}_at_{n}")
+            row[f"threshold_at_{n}"] = m.thr.get(n)
         for k in ("auc", "eer"):
             row[k], row[f"{k}_std_over_sites"] = m.site_mean(k, k), m.site_std(k)
         rows.append(row)

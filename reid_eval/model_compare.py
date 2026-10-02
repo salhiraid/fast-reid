@@ -88,6 +88,27 @@ def _method_table(key, entries):
     return _bold_best(pd.DataFrame(rows), higher, lower=["EER"]), _bold_best(pd.DataFrame(prow), [c for c in prow[0] if c.startswith(("TAR", "AUC", "bal"))], lower=["EER"])
 
 
+def _op_tables(entries):
+    """Accuracy, balanced accuracy, precision, recall and threshold at every operating point, one row per model (site-averaged)."""
+    m0 = next(iter(entries.values()))
+    ops = m0.far_order + m0.fixed
+    out = []
+    for key, title, d in (("acc", "Accuracy", 3), ("bacc", "Balanced accuracy", 3), ("prec", "Precision", 3), ("tar", "Recall (= TAR)", 3)):
+        if not all(f"{key}_at_{ops[0]}" in m.per_site for m in entries.values()):
+            continue
+        rows = []
+        for model, m in entries.items():
+            row = {"model": model}
+            for n in ops:
+                v, sd = m.site_mean(f"{key}_at_{n}", f"{key}_at_{n}"), m.site_std(f"{key}_at_{n}")
+                row[pretty(n)] = f"{v:.{d}f}" + ("" if np.isnan(sd) else f" ± {sd:.{d}f}")
+            rows.append(row)
+        out.append((f"{title} at every operating point (mean over sites ± std)", _bold_best(pd.DataFrame(rows), higher=[pretty(n) for n in ops])))
+    rows = [{"model": model, **{pretty(n): f"{m.thr[n]:.3f}" for n in ops if n in m.thr}} for model, m in entries.items()]
+    out.append(("Threshold (cosine similarity) at every operating point (exact for the global methods, median over the units otherwise)", pd.DataFrame(rows)))
+    return out
+
+
 def _paired(entries, reference):
     """Paired bootstrap (over videos, same resamples) of the difference to the reference model, object-balanced. {model: DataFrame}."""
     out, notes = {}, []
@@ -171,6 +192,8 @@ def build_model_comparison(results_root, split_version="v1", models=None, method
             lines += [f"*Only {len(entries)} of {len(dirs)} models have this method.*", ""]
         site_t, pooled_t = _method_table(key, entries)
         lines += ["**Averaged over sites**", "", _md_table(site_t), "**Pooled over all pairs (object-balanced, 95% CI over videos)**", "", _md_table(pooled_t)]
+        for t_title, t_df in _op_tables(entries):
+            lines += [f"**{t_title}**", "", _md_table(t_df)]
         if key == "global" and len(entries) >= 2:
             diffs, notes = _paired(entries, reference)
             if diffs:
@@ -192,9 +215,11 @@ def build_model_comparison(results_root, split_version="v1", models=None, method
             matrix.setdefault(model, {})[key] = m
             row = {"model": model, "method": key, "label": m.label, "n_sites": len(m.per_site)}
             for n in m.ops:
-                for b in ("tar", "far", "acc", "bacc"):
-                    row[f"{b}_at_{n}"] = m.site_mean(f"{b}_at_{n}", f"{b}_at_{n}")
-                    row[f"{b}_at_{n}_std_over_sites"] = m.site_std(f"{b}_at_{n}")
+                for b in ("tar", "far", "acc", "bacc", "prec"):
+                    if f"{b}_at_{n}" in m.per_site:
+                        row[f"{b}_at_{n}"] = m.site_mean(f"{b}_at_{n}", f"{b}_at_{n}")
+                        row[f"{b}_at_{n}_std_over_sites"] = m.site_std(f"{b}_at_{n}")
+                row[f"threshold_at_{n}"] = m.thr.get(n)
             for k in ("auc", "eer"):
                 row[k], row[f"{k}_std_over_sites"] = m.site_mean(k, k), m.site_std(k)
             long.append(row)

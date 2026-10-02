@@ -7,7 +7,7 @@
   python run_eval.py --compare results/ [--split-version v1] [--models a b] [--reference a]    # comparison tables/curves only
   python run_eval.py --list templates/                                                          # what was found
 
-Variants: full plain thr-video thr-site site-gallery (default) and the optimistic thr-video-oracle thr-site-oracle site-gallery-oracle.
+Variants: full plain thr-video thr-site site-gallery thr-global-oracle (default) and the optimistic thr-video-oracle thr-site-oracle site-gallery-oracle.
 The templates must have been made with the SAME split file (give it with --split, or copy it into the templates folder).
 """
 import argparse

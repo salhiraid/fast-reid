@@ -23,7 +23,7 @@ def built(setup):
     ds, split_p, split, tdir, tmp, solo, infos = setup
     res = tmp / "allres"
     evaluation.run(tdir, split_p, ds, BINS, res, device="cpu", verbose=False, plain=True, per_subset=False)
-    evaluation.run_threshold_modes(tdir, split_p, ds, BINS, res, ["video", "site", "video-oracle", "site-oracle"], device="cpu",
+    evaluation.run_threshold_modes(tdir, split_p, ds, BINS, res, ["video", "site", "video-oracle", "site-oracle", "global-oracle"], device="cpu",
                                    verbose=False, per_subset=False, site_queries=0)
     evaluation.run_site_gallery(tdir, split_p, ds, BINS, res, ["site-gallery", "site-gallery-oracle"], device="cpu", verbose=False,
                                 per_subset=False)
@@ -34,7 +34,7 @@ def built(setup):
 def test_all_methods_are_discovered_and_files_written(built):
     model_dir, report = built
     methods = discover(model_dir, "v1")
-    assert [m.key for m in methods] == ["global", "thr-video", "thr-site", "site-gallery", "thr-video-oracle", "thr-site-oracle", "site-gallery-oracle"]
+    assert [m.key for m in methods] == ["global", "global-oracle", "thr-video", "thr-site", "site-gallery", "thr-video-oracle", "thr-site-oracle", "site-gallery-oracle"]
     out = model_dir / "v1__all_methods"
     assert report == out / "report.md" and (out / "all_methods_summary.csv").exists() and (out / "all_methods_per_site.csv").exists()
     figs = {p.name for p in (out / "figures").glob("*.png")}

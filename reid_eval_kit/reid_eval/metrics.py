@@ -119,4 +119,7 @@ def compute(pack, balanced=False, far_target=1e-2):
         # Plain accuracy is dominated by the (much more numerous) negatives; balanced accuracy is not.
         out[f"acc_q{q}"] = _div(cnt[..., 0, q] + (Wn - cnt[..., 1, q]), Wp + Wn)
         out[f"bacc_q{q}"] = (out[f"tar_q{q}"] + (1 - out[f"far_q{q}"])) / 2
+        # precision = accepted pairs that are truly the same vehicle = TP / (TP + FP); recall = TAR. Precision depends on the share of
+        # negative pairs (a whole-site gallery has many more), so compare it across methods with care.
+        out[f"prec_q{q}"] = _div(cnt[..., 0, q], cnt[..., 0, q] + cnt[..., 1, q])
     return out
