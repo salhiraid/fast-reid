@@ -41,6 +41,25 @@ The split is checked against the dataset by a fingerprint of the **kept crops** 
 (which `build_reid_crops.py` rewrites on every run). If `quality_filter.py` / `filter_roi.py` / a rebuild changes the kept crops
 of a split video, extraction and evaluation stop and ask for a new split version.
 
+## Universal evaluation kit (`reid_eval_kit/`): evaluate any templates, in any repo
+
+`reid_eval_kit/` is a **self-contained copy of the evaluation side** (no FastReID / CLIP / encoder code): copy the folder into any repository, give
+it the dataset root and a **templates folder** with one sub-folder per model (`<model>__<mode>/`, format in `reid_eval_kit/TEMPLATE_FORMAT.md`), and it
+runs every evaluation on every model and builds a **model comparison** (tables with one row per model, best value in bold, paired bootstrap against a
+reference model, curve overlays):
+
+```bash
+cd reid_eval_kit && pip install -r requirements.txt
+python selftest.py --quick                                                   # install check on synthetic data
+python run_eval.py --data DATASET --templates templates/ --split splits/eval_split_v1.json --out results/
+python run_eval.py --compare results/ --reference mymodel__unpad_stretch      # comparison only
+python export_templates.py --data DATASET --split ... --model-name mymodel --encoder mypkg.mymod:encode   # templates from ANY encoder function
+```
+
+The kit is **generated** from the sources of this repository: after changing `reid_eval/`, run `python tools/build_eval_kit.py` (a test fails if the
+committed kit is out of date). `run_eval.py` is also available at the repository root; `run_full_eval.py` additionally extracts templates with the
+registered encoders (FastReID, CLIP-ReID). Model comparison output: `results/comparison_<split>/report.md`, `models_summary.csv`, `models_per_site.csv`.
+
 ## One command
 
 ```bash

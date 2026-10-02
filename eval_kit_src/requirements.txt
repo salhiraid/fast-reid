@@ -1,0 +1,7 @@
+numpy>=1.17
+pandas>=1.0
+torch>=1.8          # CPU or GPU build: used for the pairwise similarity matrices
+opencv-python>=4.0  # image reading and contact sheets (opencv-python-headless is fine)
+matplotlib>=3.1
+pyyaml
+pillow
