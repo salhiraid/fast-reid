@@ -43,6 +43,7 @@ def main(argv=None):
     ap.add_argument("--match-sheets", dest="match_sheets", action="store_true", default=None, help="force per-object match images (default: on for full, off for plain)")
     ap.add_argument("--no-match-sheets", dest="match_sheets", action="store_false")
     ap.add_argument("--match-topk", type=int, default=10, help="matches per row in the per-object images")
+    ap.add_argument("--site-queries", type=int, default=10, help="with --thr-mode site: sampled query objects per site for the site-level matching visuals (0 = none)")
     ap.add_argument("--no-report", action="store_true")
     a = ap.parse_args(argv)
 
@@ -68,7 +69,8 @@ def main(argv=None):
         ap.error("--templates is required")
     if a.thr_mode:
         outs = evaluation.run_threshold_modes(a.templates, a.split, a.data, a.bins, a.out, a.thr_mode, a.device,
-                                              per_subset=not a.no_per_subset, kind=a.thr_kind)
+                                              per_subset=not a.no_per_subset, kind=a.thr_kind,
+                                              site_queries=a.site_queries, match_topk=a.match_topk)
         for m, d in outs.items():
             print(f"[{m}] results in {d}")
         return 0

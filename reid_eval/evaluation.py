@@ -17,6 +17,7 @@ from .bins import N_FINE, Bins
 from .common import read_json, sha256_file, write_json_atomic
 from .failures import collect, contact_sheets
 from .matches import object_sheets
+from .site_matches import site_visuals
 from .split import check_fingerprints
 from .templates import SETS, check_alignment, load_video_npz, video_file
 
@@ -243,8 +244,10 @@ def write_results(out, bins: Bins, thresholds, val_paths, test_paths, data_root=
         for site, d in site_dirs.items():
             sub = [x for x in test_s if x.site == site]
             sd = out / "per_site" / d
+            sm = out / "site_matches" / _slug(site, set()) / "index.md"
             write_subset(Aggregation(sub, bins, thresholds), sd, bins, thresholds, kind, f"Site {site}: {model} ({kind})",
-                         {"site": site, "short_title": f"site {site}", **(extra or {})})
+                         {"site": site, "short_title": f"site {site}", **(extra or {}),
+                          "site_matches": f"../../site_matches/{sm.parent.name}/index.md" if sm.exists() else None})
             build_report_from_dir(sd, data_root)
         for x in test_s:
             vd = out / "per_video" / vid_dirs[x.video_id]
@@ -293,8 +296,35 @@ def _thr_row(neg_hist, bins: Bins):
     return [M.threshold_for_far(neg_hist, t) for t in bins.far_targets] + list(bins.fixed_thresholds)
 
 
+def _write_site_visuals(tdir, by_video, site_videos, own, bins, out_dir, n_queries, topk, seed, device, verbose):
+    """For every site: its objects against the gallery of all crops of all the site's test videos (see site_matches.py)."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    j = int(np.argmin([abs(np.log10(t) - np.log10(0.01)) for t in bins.far_targets]))      # the FAR target nearest 1 %
+    label = f"t(FAR {bins.thr_names[j].replace('pct', '%')})"
+    rows = []
+    for site, vlist in sorted(site_videos.items()):
+        emb_by = {v: load_video(tdir, "test", v, by_video[v])[0] for v in vlist}
+        thr = M.threshold_for_far(sum(own[v] for v in vlist), bins.far_targets[j])
+        rows.append(site_visuals(site, vlist, emb_by, {v: by_video[v] for v in vlist}, thr, label, out_dir / _slug(site, set()),
+                                 n_queries, topk, seed, device=device))
+        if verbose:
+            print(f"[site matches] {site}: {rows[-1]['objects']} objects, {rows[-1]['candidates_above_threshold']} cross-video candidates "
+                  f"above the site threshold", file=sys.stderr)
+    pd.DataFrame(rows).to_csv(out_dir / "index.csv", index=False)
+    md = ["# Site-level matching", "",
+          "Each site's objects against the gallery of all crops of all the site's test videos. Same-video matches are labelled; "
+          "matches between videos have no ground truth (identity unknown). One folder per site.", "",
+          "| site | videos | objects | crops | sampled queries | cross-video candidates above the site threshold |", "|---|---|---|---|---|---|"]
+    for r in rows:
+        md.append(f"| [{r['site']}]({_slug(r['site'], set())}/index.md) | {r['videos']} | {r['objects']} | {r['crops']} | {r['queries']} | "
+                  f"{r['candidates_above_threshold']} |")
+    (out_dir / "index.md").write_text("\n".join(md), encoding="utf-8")
+    return rows
+
+
 def run_threshold_modes(template_dir, split_path, data_root, bins_path, out_base, modes, device=None, verbose=True, per_subset=True,
-                        seed=0, kind="full"):
+                        seed=0, kind="full", site_queries=10, match_topk=10):
     """Evaluations with a threshold per video and/or per site (`modes`: video, site, video-oracle, site-oracle).
 
     Global-threshold evaluations (full / plain) use thresholds from the VALIDATION videos. These use the test videos' own
@@ -396,12 +426,17 @@ def run_threshold_modes(template_dir, split_path, data_root, bins_path, out_base
             test_paths.append(_save_acc(acc, out / "acc" / "test" / f"{vid}.npz"))
             if verbose:
                 print(f"[acc thr-{mode}] {k + 1}/{len(units)} {vid}", file=sys.stderr)
+        site_summary = None
+        if mode == "site" and site_queries:      # site-level matching visuals (sampled queries, object matrix, cross-video candidates)
+            site_summary = _write_site_visuals(tdir, by_video, site_videos, own, bins, out / "site_matches", site_queries, match_topk, seed,
+                                               device, verbose)
         write_json_atomic(out / "run.json", {"template_dir": str(tdir), "manifest": manifest, "split_file": str(split_path), "kind": kind,
                                              "threshold_mode": mode, "data_root": str(data_root), "bins_file": str(bins_path),
                                              "bins_sha256": bins.sha256})
         extra = {"threshold_protocol": THR_PROTOCOLS[mode], "threshold_mode": mode, "threshold_units_used": thresholds["n_units_used"],
                  "threshold_units_skipped": thresholds["units_skipped"], "oracle": "oracle" in mode,
-                 "n_calibration_negatives_median": thresholds["n_calibration_negatives_median"]}
+                 "n_calibration_negatives_median": thresholds["n_calibration_negatives_median"],
+                 "site_matches": "site_matches/index.md" if site_summary is not None else None}
         model = f"{manifest['model_name']} / {manifest['preproc_mode']}"
         write_results(out, bins, thresholds, [], test_paths, data_root, kind=kind, per_subset=per_subset, verbose=verbose,
                       check_thresholds=False, extra=extra,

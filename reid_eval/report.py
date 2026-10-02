@@ -138,6 +138,9 @@ def build_report_from_dir(results_dir, data_root=None):
                 plot_heatmap(df, a, b, fig / png, n)
                 L += [f"![{png}](figures/{png})", ""]
 
+    if s.get("site_matches"):
+        L += ["## Site-level matching", "", f"Objects of the site against the gallery of all the site's videos (sampled queries, object x object "
+              f"similarity matrix, cross-video candidates; matches between videos have no ground truth): [{s['site_matches']}]({s['site_matches']})", ""]
     if s.get("matches"):
         L += ["## Object matches", "", f"One image per object with its top-10 positive and negative matches: [{s['matches']}]({s['matches']})", ""]
     elif (out / "matches").is_dir():

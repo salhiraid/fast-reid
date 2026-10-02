@@ -32,6 +32,7 @@ def main(argv=None):
     ap.add_argument("--no-per-subset", action="store_true", help="skip the per-site and per-video reports (faster)")
     ap.add_argument("--no-match-sheets", action="store_true", help="skip the per-object top-10 match images (faster)")
     ap.add_argument("--match-topk", type=int, default=10)
+    ap.add_argument("--site-queries", type=int, default=10, help="sampled query objects per site in the site-level matching visuals (0 = none)")
     ap.add_argument("--templates", default="templates/")
     ap.add_argument("--out", default="results/")
     ap.add_argument("--modes", nargs="+", default=["letterbox", "unpad_stretch"])
@@ -75,7 +76,8 @@ def main(argv=None):
     thr_modes = [x[4:] for x in a.variants if x.startswith("thr-")]
     if thr_modes:
         print(f"[4/4] evaluating {a.model}__{chosen} (threshold per unit: {', '.join(thr_modes)})", file=sys.stderr)
-        evaluate.main(["--templates", str(template_dir(a.templates, a.model, chosen)), "--bins", a.bins, *common, "--thr-mode", *thr_modes]
+        evaluate.main(["--templates", str(template_dir(a.templates, a.model, chosen)), "--bins", a.bins, *common, "--thr-mode", *thr_modes,
+                      "--site-queries", str(a.site_queries), "--match-topk", str(a.match_topk)]
                       + (["--no-per-subset"] if a.no_per_subset else []))
     for variant in [x for x in a.variants if not x.startswith("thr-")]:
         print(f"[4/4] evaluating {a.model}__{chosen} ({variant})", file=sys.stderr)
