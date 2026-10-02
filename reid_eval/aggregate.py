@@ -106,14 +106,23 @@ class VideoSummary:
                   "obj_tar_num", "obj_tar_den", "obj_low_sim", "obj_low_uid", "thresholds"):
             setattr(self, k, acc[k])
         self.fail = {k: v for k, v in acc.items() if k.startswith("fail_")}
+        # thresholds actually applied in this video: one row per fold (a single row unless held-out per-video thresholds)
+        self.thr_table = acc["thr_table"] if "thr_table" in acc else np.atleast_2d(acc["thresholds"])
+        self.obj_fold = acc["obj_fold"] if "obj_fold" in acc else np.zeros(self.n_objects, np.int64)
+        self.strict_idx = bins.strict_idx
+
+    def strict_thr_of_pairs(self):
+        """The strict-FAR threshold that applied to each object pair of `pair_*` (pairs never straddle two folds)."""
+        return self.thr_table[self.obj_fold[self.pair_a], self.strict_idx]
 
 
-def load_summaries(paths, bins: Bins, thresholds: dict):
-    """Returns (list of VideoSummary, pooled dense cells pack)."""
+def load_summaries(paths, bins: Bins, thresholds: dict, check_thresholds=True):
+    """Returns (list of VideoSummary, pooled dense cells pack). check_thresholds=False for the per-video / per-site threshold
+    evaluations, where every video has its own thresholds (stored in its accumulator)."""
     out, pooled = [], None
     for p in paths:
         acc = load_acc(p)
-        if not np.allclose(acc["thresholds"], thresholds["thresholds"]):
+        if check_thresholds and not np.allclose(acc["thresholds"], thresholds["thresholds"]):
             raise ValueError(f"{acc['meta']['video_id']}: accumulated with other thresholds than thresholds.json")
         if str(acc["bins_sha256"]) != bins.sha256:
             raise ValueError(f"{acc['meta']['video_id']}: accumulated with a different bins file")
@@ -347,8 +356,7 @@ class Aggregation:
             row[f"far_at_{n}"] = t[f"pooled_far_at_{n}"]
             row[f"acc_at_{n}"], row[f"bacc_at_{n}"] = t[f"pooled_acc_at_{n}"], t[f"pooled_bacc_at_{n}"]
             row[f"balanced_acc_at_{n}"], row[f"balanced_bacc_at_{n}"] = t[f"balanced_acc_at_{n}"], t[f"balanced_bacc_at_{n}"]
-        thr = self.thresholds["thresholds"][self.bins.strict_idx]
-        row["confused_object_pairs"] = int(sum((s.pair_med > thr).sum() for s in summaries))
+        row["confused_object_pairs"] = int(sum((s.pair_med > s.strict_thr_of_pairs()).sum() for s in summaries))
         row["n_object_pairs"] = int(sum(len(s.pair_med) for s in summaries))
         return row
 
@@ -366,7 +374,6 @@ class Aggregation:
         return pd.DataFrame(rows)
 
     def per_object(self):
-        thr = self.thresholds["thresholds"][self.bins.strict_idx]
         n = self.bins.strict_name
         P1 = self.bins.cell_shape[0]
         pos_labels = self.bins.labels("delta_position")
@@ -375,7 +382,7 @@ class Aggregation:
             T = s.n_objects
             hi_neg = np.full(T, -np.inf)
             nfalse = np.zeros(T, np.int64)
-            for x, y, mx in zip(s.pair_a, s.pair_b, s.pair_max):
+            for x, y, mx, thr in zip(s.pair_a, s.pair_b, s.pair_max, s.strict_thr_of_pairs()):
                 hi_neg[x] = max(hi_neg[x], mx); hi_neg[y] = max(hi_neg[y], mx)
                 if mx >= thr:
                     nfalse[x] += 1; nfalse[y] += 1

@@ -7,6 +7,9 @@
   python evaluate.py --templates ... --plain       # same, WITHOUT the difficulty criteria (pose/occlusion/keypoints): global metrics,
                                                    # per site and per video only -> results/<model>__<mode>/<split>__plain/
 
+  python evaluate.py --templates ... --thr-mode video site   # threshold PER VIDEO / PER SITE (held out; see README): results/.../<split>__thr-video, __thr-site
+  python evaluate.py --templates ... --thr-mode video-oracle site-oracle   # same, tuned on the evaluated data: optimistic upper bound
+
   python evaluate.py --choose-mode templates/<m>__letterbox templates/<m>__unpad_stretch --split ... --data <root> --out results/
       picks the preprocessing mode with the higher pooled AUC on the VALIDATION videos only
 
@@ -31,6 +34,8 @@ def main(argv=None):
     ap.add_argument("--device", default=None)
     ap.add_argument("--choose-mode", nargs="+", metavar="TEMPLATE_DIR")
     ap.add_argument("--report-only", metavar="RESULTS_DIR")
+    ap.add_argument("--thr-mode", nargs="+", choices=["video", "site", "video-oracle", "site-oracle"], default=None,
+                    help="evaluate with a threshold per video / per site instead of the global validation threshold (test videos only)")
     ap.add_argument("--plain", action="store_true", help="no difficulty criteria: global / per-site / per-video metrics only")
     ap.add_argument("--no-per-subset", action="store_true", help="skip the per-site and per-video reports (faster)")
     ap.add_argument("--match-sheets", dest="match_sheets", action="store_true", default=None, help="force per-object match images (default: on for full, off for plain)")
@@ -59,6 +64,12 @@ def main(argv=None):
         return 0
     if not a.templates:
         ap.error("--templates is required")
+    if a.thr_mode:
+        outs = evaluation.run_threshold_modes(a.templates, a.split, a.data, a.bins, a.out, a.thr_mode, a.device,
+                                              per_subset=not a.no_per_subset)
+        for m, d in outs.items():
+            print(f"[{m}] results in {d}")
+        return 0
     out = evaluation.run(a.templates, a.split, a.data, a.bins, a.out, a.device, plain=a.plain, per_subset=not a.no_per_subset,
                          match_sheets=a.match_sheets, match_topk=a.match_topk)
     print(f"results in {out}")

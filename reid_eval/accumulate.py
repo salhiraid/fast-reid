@@ -31,10 +31,16 @@ class VideoMeta:
     occ: np.ndarray             # (N,) bool
     kp: Optional[np.ndarray] = None     # (N, K) bool visibility, None if no crop has keypoints
     kp_ok: Optional[np.ndarray] = None  # (N,) bool: this crop has keypoint information
+    obj_fold: Optional[np.ndarray] = None  # (T,) int fold of each object; pairs of objects in different folds are NOT evaluated
 
     @property
     def n(self):
         return len(self.trk)
+
+    def with_folds(self, obj_fold):
+        """Copy with an object -> fold assignment (held-out per-video thresholds)."""
+        return VideoMeta(self.tracklet_ids, self.trk, self.pos, self.pos_ok, self.az, self.occ, self.kp, self.kp_ok,
+                         None if obj_fold is None else np.asarray(obj_fold, np.int64))
 
     def neutral(self):
         """Same crops and objects, but NO pose/occlusion/keypoint information: every pair lands in one 'unknown' cell.
@@ -130,6 +136,25 @@ def fine_histograms(emb, meta, device=None, block_pairs=1 << 24):
     return out.view(2, N_FINE).cpu().numpy()
 
 
+def assign_folds(video_id, n_objects, seed=0):
+    """Deterministic 2-fold split of a video's OBJECTS (never of crops: a tracklet's crops stay together)."""
+    import zlib
+    rng = np.random.RandomState((zlib.crc32(str(video_id).encode()) + int(seed)) % (2 ** 32))
+    perm = rng.permutation(n_objects)
+    fold = np.zeros(n_objects, np.int64)
+    fold[perm[n_objects // 2:]] = 1
+    return fold
+
+
+def fine_histograms_subset(emb, meta: VideoMeta, obj_mask, device=None):
+    """Fine (positive, negative) histograms of the pairs among the objects selected by `obj_mask` ((T,) bool) only."""
+    rows = np.asarray(obj_mask)[meta.trk]
+    sub_trk = np.unique(meta.trk[rows], return_inverse=True)[1]
+    sub = VideoMeta(list(range(int(sub_trk.max()) + 1)) if len(sub_trk) else [], sub_trk, meta.pos[rows], meta.pos_ok[rows],
+                    meta.az[rows], meta.occ[rows])
+    return fine_histograms(np.asarray(emb)[rows], sub, device)
+
+
 def accumulate_video(emb, meta: VideoMeta, bins: Bins, thresholds, device=None, block_pairs=1 << 24, n_fail=200,
                      fail_pos_all=False):
     """Return the per-video accumulator dict (see module docstring and README_reid_eval.md for the layout)."""
@@ -137,8 +162,13 @@ def accumulate_video(emb, meta: VideoMeta, bins: Bins, thresholds, device=None, 
     N = len(E)
     P1, A1, O3, K1 = bins.cell_shape
     NC = bins.n_cells
-    nthr = len(thresholds)
-    thr = [float(t) for t in thresholds]
+    tab = np.atleast_2d(np.asarray(thresholds, np.float64))        # (F, Q): one row per fold (F = 1 without folds)
+    nthr = tab.shape[1]
+    use_folds = meta.obj_fold is not None
+    fold_obj = np.asarray(meta.obj_fold, np.int64) if use_folds else np.zeros(T, np.int64)
+    assert tab.shape[0] == int(fold_obj.max()) + 1, "need one threshold row per fold"
+    thr_t = torch.as_tensor(tab, dtype=torch.float32, device=dev)
+    fold = torch.as_tensor(fold_obj, device=dev)
     f32 = lambda a: torch.as_tensor(a, dtype=torch.float32, device=dev)
     pos, pos_ok, az = f32(meta.pos), torch.as_tensor(meta.pos_ok, device=dev), f32(meta.az)
     occ = torch.as_tensor(meta.occ, device=dev).long()
@@ -188,6 +218,12 @@ def accumulate_video(emb, meta: VideoMeta, bins: Bins, thresholds, device=None, 
             i = ri[c0:c0 + CHUNK] + r0
             j = cj[c0:c0 + CHUNK] + r0
             ti, tj = trk[i], trk[j]
+            if use_folds:  # held-out thresholds: only pairs inside one fold are evaluated
+                same_fold = fold[ti] == fold[tj]
+                if not bool(same_fold.all()):
+                    s, i, j, ti, tj = s[same_fold], i[same_fold], j[same_fold], ti[same_fold], tj[same_fold]
+                    if len(s) == 0:
+                        continue
             is_neg = ti != tj
             ty = is_neg.long()
             # ---- joint cell
@@ -226,8 +262,9 @@ def accumulate_video(emb, meta: VideoMeta, bins: Bins, thresholds, device=None, 
             M2B += torch.bincount(ct, weights=w * s64 * s64, minlength=NC * 2)
             NB += torch.bincount(ct, weights=w, minlength=NC * 2)
             KH += torch.bincount((kmb * 2 + ty) * N_HIST + cb, minlength=KM1 * 2 * N_HIST)
-            for q, t in enumerate(thr):
-                ge = s >= t
+            fp = fold[ti]                                      # fold of each pair -> its threshold row
+            for q in range(nthr):
+                ge = s >= thr_t[fp, q]
                 CNT[q] += torch.bincount(ct[ge], minlength=NC * 2)
                 CNTB[q] += torch.bincount(ct[ge], weights=w[ge], minlength=NC * 2)
                 KCNT[q] += torch.bincount((kmb * 2 + ty)[ge], minlength=KM1 * 2)
@@ -239,8 +276,8 @@ def accumulate_video(emb, meta: VideoMeta, bins: Bins, thresholds, device=None, 
             sp, tip, pbp = s[isp], ti[isp], pb[isp]
             if len(sp):
                 TARD += torch.bincount(tip * P1 + pbp, minlength=T * P1)
-                for q, t in enumerate(thr):
-                    TARN[q] += torch.bincount((tip * P1 + pbp)[sp >= t], minlength=T * P1)
+                for q in range(nthr):
+                    TARN[q] += torch.bincount((tip * P1 + pbp)[sp >= thr_t[fold[tip], q]], minlength=T * P1)
                 # lowest positive of each object in this chunk: sort by (object, similarity), take the first of each object
                 order = torch.argsort(tip.double() + (sp.double().clamp(-1, 1) + 1) / 4)
                 ts = tip[order]
@@ -292,7 +329,7 @@ def accumulate_video(emb, meta: VideoMeta, bins: Bins, thresholds, device=None, 
         "pair_max": cat(pmax, np.float32), "pair_n": cat(pn, np.int64),
         "fail_neg": fneg, "fail_pos": fpos,
         "kpmin_hist": cpu(KH.view(KM1, 2, N_HIST)), "kpmin_cnt": np.stack([cpu(c.view(KM1, 2)) for c in KCNT], -1),
-        "thresholds": np.asarray(thr, np.float64),
+        "thresholds": tab[0], "thr_table": tab, "obj_fold": fold_obj,
         "n_crops": np.int64(N), "n_objects": np.int64(T), "bins_sha256": np.asarray(bins.sha256),
     }
     return acc

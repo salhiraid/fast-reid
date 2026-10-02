@@ -42,21 +42,31 @@ def build_report_from_dir(results_dir, data_root=None):
     fig = out / "figures"
     fig.mkdir(exist_ok=True)
     th = s["thresholds"]
+    proto = s.get("threshold_protocol")                           # per-video / per-site threshold evaluations
     fixed = s.get("fixed_names", [])
     ops = order + fixed                                           # every operating point: FAR thresholds, then fixed thresholds
     L = [f"# {s['title']}", "",
+         *(["> **ORACLE evaluation: the thresholds were tuned on the same videos they are measured on. The numbers are optimistic; "
+            "use them only as an upper bound for what per-video / per-site calibration could give.**", ""] if s.get("oracle") else []),
          f"- evaluation: **{s['kind']}**" + (" (all difficulty criteria: delta position, delta azimuth, occlusion, keypoints)"
                                               if s["kind"] == "full" else " (no pose / occlusion / keypoint criteria: every pair counts, one global result)"),
          f"- split `{s['split_version']}`, bins `{s['bins_version']}`, {s['n_videos']} test video(s)",
-         "- thresholds from **validation only**: " + ", ".join(f"t({pretty(n)}) = {th[n]:.4f}" for n in order)
-         + ("; fixed (not tuned): " + ", ".join(f"{pretty(n)}" for n in fixed) if fixed else ""),
-         f"- CIs: percentile bootstrap over videos ({s['bootstrap']['resamples']} resamples, {int(s['bootstrap']['level'] * 100)}%); "
-         + ("" if s["has_ci"] else "**not computed here (fewer than 5 videos)**"), ""]
+         *([f"- **threshold protocol**: {proto}",
+            f"- {s['threshold_units_used']} video(s) evaluated, {len(s['threshold_units_skipped'])} skipped; median number of calibration "
+            f"negative pairs per threshold: {s['n_calibration_negatives_median']:,.0f} (few negatives make a strict-FAR threshold noisy). "
+            "The FAR below is MEASURED" + (" only in the held-out protocols; here it is forced to the target by construction." if s.get("oracle") else
+                                           " on pairs that were not used to set the threshold."),
+            "- per-unit thresholds: `thresholds_per_unit.csv`"] if proto else
+           ["- thresholds from **validation only**: " + ", ".join(f"t({pretty(n)}) = {th[n]:.4f}" for n in order)
+            + ("; fixed (not tuned): " + ", ".join(f"{pretty(n)}" for n in fixed) if fixed else "")]),
+         (f"- CIs: percentile bootstrap over videos ({s['bootstrap']['resamples']} resamples, {int(s['bootstrap']['level'] * 100)}%)"
+          if s["has_ci"] else "- CIs: **not computed here (fewer than 5 videos)**"), ""]
 
     # ---------------- headline
     L += ["## TAR at fixed FAR", "",
-          "Main score = **object-balanced** (every object and object pair counts equally). The global thresholds come from validation; "
-          "the FAR they give here is measured, not forced.", ""]
+          "Main score = **object-balanced** (every object and object pair counts equally). "
+          + ("Each video / site has its own threshold (see the protocol above)." if proto else
+             "The global thresholds come from validation; the FAR they give here is measured, not forced."), ""]
     rows = []
     for name in ("object_balanced", "pooled", "video_averaged"):
         d = h[name]
@@ -87,7 +97,7 @@ def build_report_from_dir(results_dir, data_root=None):
     # ---------------- accuracy at the fixed threshold and at every FAR threshold
     if f"acc_at_{ops[0]}" in h["pooled"]:
         npos, nneg = h["support"]["n_pos"], h["support"]["n_neg"]
-        hdr = lambda n: f"{pretty(n)} (t = {th[n]:.3f})"
+        hdr = lambda n: pretty(n) if (proto and n not in fixed) else f"{pretty(n)} (t = {th[n]:.3f})"
         L += ["## Accuracy", "",
               "Accuracy = (positive pairs accepted + negative pairs rejected) / all pairs, at each threshold. "
               f"Here {nneg / max(npos + nneg, 1):.0%} of the pairs are negatives, so plain accuracy mostly measures the negatives; "
@@ -95,7 +105,7 @@ def build_report_from_dir(results_dir, data_root=None):
         for key, label in (("bacc", "Balanced accuracy"), ("acc", "Accuracy")):
             rows = [{"version": name, **{hdr(n): _ci(h[name][f"{key}_at_{n}"], 4) for n in ops}} for name in ("object_balanced", "pooled")]
             L += [f"**{label}**", "", _md_table(pd.DataFrame(rows))]
-        plot_accuracy(roc, {n: th[n] for n in ops}, fig / "accuracy_vs_threshold.png", title=s.get("short_title", ""))
+        plot_accuracy(roc, {n: th[n] for n in (fixed if proto else ops)}, fig / "accuracy_vs_threshold.png", title=s.get("short_title", ""))
         L += ["![accuracy vs threshold](figures/accuracy_vs_threshold.png)", ""]
 
     # ---------------- difficulty axes (full evaluation only)
@@ -129,6 +139,10 @@ def build_report_from_dir(results_dir, data_root=None):
     elif (out / "matches").is_dir():
         L += ["## Object matches", "", "One image per object (query = medoid crop) with its top-10 positive and negative matches, per video: "
               "`matches/<video>/index.md` (images + table, most confusable objects first) and `matches/<video>/index.csv`.", ""]
+
+    if proto and s.get("threshold_units_skipped") and (out / "per_video.csv").exists():
+        L += ["## Videos that could not be evaluated with this protocol", "",
+              _md_table(pd.DataFrame([{"video": u["unit"], "site": u["site"], "reason": u["status"]} for u in s["threshold_units_skipped"]])), ""]
 
     # ---------------- per site / per video (global report only)
     if (out / "per_site.csv").exists():
@@ -176,3 +190,51 @@ def build_report_from_dir(results_dir, data_root=None):
                 L += [f"![{p.stem}](failures/{p.name})", ""]
     (out / "report.md").write_text("\n".join(L), encoding="utf-8")
     return out / "report.md"
+
+
+VARIANTS = (("", "global threshold from validation (all difficulty criteria)"), ("__plain", "global threshold from validation"),
+            ("__thr-video", "threshold per video, held out"), ("__thr-site", "threshold per site, held out (leave-one-video-out)"),
+            ("__thr-video-oracle", "threshold per video, ORACLE (tuned on the evaluated video)"),
+            ("__thr-site-oracle", "threshold per site, ORACLE (tuned on the evaluated site)"))
+
+
+def write_variant_comparison(model_dir, split_version):
+    """<model_dir>/<split>__threshold_comparison.md/.csv: object-balanced TAR at every FAR for each threshold protocol that was run."""
+    model_dir = Path(model_dir)
+    rows, seen_global = [], False
+    for suffix, label in VARIANTS:
+        d = model_dir / f"{split_version}{suffix}"
+        if not (d / "summary.json").exists():
+            continue
+        if suffix in ("", "__plain"):          # same global thresholds and pairs: identical numbers, show once
+            if seen_global:
+                continue
+            seen_global = True
+        s = read_json(d / "summary.json")
+        h = s["headline"]
+        names = sorted(s["far_names"], key=lambda n: float(n.replace("pct", "")))
+        row = {"variant": label, "folder": d.name, "videos evaluated": s["n_videos"],
+               "pos pairs": h["support"]["n_pos"], "neg pairs": h["support"]["n_neg"]}
+        for n in names:
+            row[f"TAR @ {pretty(n)}"] = h["object_balanced"][f"tar_at_{n}"]["value"]
+        for n in names:
+            row[f"measured FAR @ {pretty(n)}"] = h["pooled"][f"far_at_{n}"]["value"]
+        for n in s.get("fixed_names", []):
+            row[f"balanced acc @ {pretty(n)}"] = h["object_balanced"][f"bacc_at_{n}"]["value"]
+        rows.append(row)
+    if len(rows) < 2:
+        return None
+    df = pd.DataFrame(rows)
+    df.to_csv(model_dir / f"{split_version}__threshold_comparison.csv", index=False)
+    show = df.copy()
+    for c in show.columns[5:]:
+        show[c] = show[c].map(lambda x: f"{x:.4f}")
+    show["pos pairs"], show["neg pairs"] = show["pos pairs"].map("{:,}".format), show["neg pairs"].map("{:,}".format)
+    text = ["# Threshold protocols side by side", "",
+            "Object-balanced TAR at each FAR target, and the FAR actually measured (pooled). **Read with care**: the rows do not evaluate exactly "
+            "the same pairs. The held-out per-video protocol evaluates only pairs inside each half of a video; the per-site protocol skips "
+            "sites with a single test video; ORACLE rows tune the threshold on the data they are measured on (FAR forced to the target, "
+            "optimistic). Differences between rows therefore mix the effect of the threshold with a change of the evaluated pairs.", "",
+            _md_table(show.drop(columns=["folder"]))]
+    (model_dir / f"{split_version}__threshold_comparison.md").write_text("\n".join(text), encoding="utf-8")
+    return model_dir / f"{split_version}__threshold_comparison.md"

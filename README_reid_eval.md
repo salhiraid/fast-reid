@@ -132,6 +132,26 @@ All of them are exact counts, checked against a brute-force computation in `test
 * The fixed threshold is not tuned on anything. To choose another one, add it to `fixed_thresholds` in a new bins file (e.g. `bins_v4.yaml`).
   A threshold that maximises accuracy would have to be chosen on the validation videos, never on test.
 
+## Threshold per video and per site (extra evaluations)
+
+In addition to `full` and `plain` (one global threshold per FAR target, set on the validation videos), `run_full_eval.py` runs two
+evaluations with **a threshold per video** and **a threshold per site**. A threshold calibrated on the data it is then measured on is
+tuning on test, so the default protocols hold the calibration data out of the measurement:
+
+| folder | protocol |
+|---|---|
+| `<split>__thr-video` | each video's objects are split in two folds (seeded, by tracklet); fold A is evaluated with the threshold set on the negative pairs of fold B and vice versa; pairs across folds are not evaluated. Videos with < 4 objects are skipped |
+| `<split>__thr-site` | leave-one-video-out: each test video is evaluated with the threshold set on the negatives of the OTHER test videos of its site. A site with one test video is skipped (the validation videos cannot be used: the split is site-disjoint) |
+| `<split>__thr-video-oracle`, `__thr-site-oracle` | opt-in (`--variants ... thr-video-oracle thr-site-oracle`). The threshold is set on the evaluated data itself (FAR is forced to the target): an optimistic **upper bound**, labelled as such in the report |
+
+They use the plain kind (no pose / occlusion / keypoint criteria) and the same FAR targets and fixed threshold; each has global,
+per-site and per-video tables/figures like the other evaluations. Per-unit thresholds and the number of calibration negatives are in
+`thresholds_per_unit.csv`; videos that could not be evaluated are listed in the report. `<split>__threshold_comparison.md/.csv`
+(in the model folder) puts the protocols side by side. Caveats: a single video has few negatives, so strict-FAR thresholds (0.1 %) are noisy;
+and the rows do not evaluate exactly the same pairs, so differences mix the effect of the threshold with the change of pairs.
+Only these two run by default; choose with `--variants full plain thr-video thr-site`, or run them alone with
+`evaluate.py --templates ... --thr-mode video site`.
+
 ## Per-object match images (top-10 positives and negatives)
 
 For **every object of every test video** the `full` evaluation writes one image, `results/<model>__<mode>/<split>/matches/<video>/<object>.png`
