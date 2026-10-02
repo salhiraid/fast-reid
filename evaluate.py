@@ -10,6 +10,9 @@
   python evaluate.py --templates ... --thr-mode video site   # threshold PER VIDEO / PER SITE (held out; see README): results/.../<split>__thr-video, __thr-site
   python evaluate.py --templates ... --thr-mode video-oracle site-oracle   # same, tuned on the evaluated data: optimistic upper bound
 
+  python evaluate.py --templates ... --thr-mode site-gallery   # SITE MATCHING: gallery = all crops of all the site's videos, threshold per site
+  python evaluate.py --all-methods results/<model>__<mode> --split-version v1   # table + curves comparing every method run so far
+
   python evaluate.py --choose-mode templates/<m>__letterbox templates/<m>__unpad_stretch --split ... --data <root> --out results/
       picks the preprocessing mode with the higher pooled AUC on the VALIDATION videos only
 
@@ -34,7 +37,9 @@ def main(argv=None):
     ap.add_argument("--device", default=None)
     ap.add_argument("--choose-mode", nargs="+", metavar="TEMPLATE_DIR")
     ap.add_argument("--report-only", metavar="RESULTS_DIR")
-    ap.add_argument("--thr-mode", nargs="+", choices=["video", "site", "video-oracle", "site-oracle"], default=None,
+    ap.add_argument("--all-methods", metavar="MODEL_RESULTS_DIR", help="build the all-methods comparison (tables + curves) for results/<model>__<mode>")
+    ap.add_argument("--split-version", default=None, help="with --all-methods: split version folder prefix (default: from --split, else v1)")
+    ap.add_argument("--thr-mode", nargs="+", choices=["video", "site", "video-oracle", "site-oracle", "site-gallery", "site-gallery-oracle"], default=None,
                     help="evaluate with a threshold per video / per site instead of the global validation threshold (test videos only)")
     ap.add_argument("--thr-kind", choices=["full", "plain"], default="full",
                     help="with --thr-mode: full = all difficulty criteria (default), plain = global metrics only")
@@ -54,6 +59,12 @@ def main(argv=None):
         for sub in sorted(list((root / "per_site").glob("*/summary.json")) + list((root / "per_video").glob("*/summary.json"))):
             build_report_from_dir(sub.parent, a.data)
         return 0
+    if a.all_methods:
+        from reid_eval.all_methods import build_all_methods
+        version = a.split_version or (read_json(a.split)["version"] if a.split else "v1")
+        path = build_all_methods(a.all_methods, version)
+        print(path if path else f"no evaluation folders '{version}*' found in {a.all_methods}")
+        return 0 if path else 1
     if not (a.split and a.data):
         ap.error("--split and --data are required")
     if a.choose_mode:
@@ -68,9 +79,16 @@ def main(argv=None):
     if not a.templates:
         ap.error("--templates is required")
     if a.thr_mode:
-        outs = evaluation.run_threshold_modes(a.templates, a.split, a.data, a.bins, a.out, a.thr_mode, a.device,
-                                              per_subset=not a.no_per_subset, kind=a.thr_kind,
-                                              site_queries=a.site_queries, match_topk=a.match_topk)
+        outs = {}
+        std_modes = [m for m in a.thr_mode if not m.startswith("site-gallery")]
+        gal_modes = [m for m in a.thr_mode if m.startswith("site-gallery")]
+        if std_modes:
+            outs.update(evaluation.run_threshold_modes(a.templates, a.split, a.data, a.bins, a.out, std_modes, a.device,
+                                                       per_subset=not a.no_per_subset, kind=a.thr_kind,
+                                                       site_queries=a.site_queries, match_topk=a.match_topk))
+        if gal_modes:
+            outs.update(evaluation.run_site_gallery(a.templates, a.split, a.data, a.bins, a.out, gal_modes, a.device,
+                                                    per_subset=not a.no_per_subset))
         for m, d in outs.items():
             print(f"[{m}] results in {d}")
         return 0

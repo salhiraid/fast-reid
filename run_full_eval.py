@@ -26,9 +26,10 @@ def main(argv=None):
     ap.add_argument("--weights", default=None)
     ap.add_argument("--split", default="splits/eval_split_v1.json")
     ap.add_argument("--bins", default="configs/bins_v3.yaml", help="FAR targets 0.1, 1, 2, 5, 10 %%")
-    ap.add_argument("--variants", nargs="+", choices=["full", "plain", "thr-video", "thr-site", "thr-video-oracle", "thr-site-oracle"],
-                    default=["full", "plain", "thr-video", "thr-site"],
+    ap.add_argument("--variants", nargs="+", choices=["full", "plain", "thr-video", "thr-site", "site-gallery", "thr-video-oracle", "thr-site-oracle", "site-gallery-oracle"],
+                    default=["full", "plain", "thr-video", "thr-site", "site-gallery"],
                     help="thr-*: threshold per video / per site (held out); the -oracle ones are tuned on the evaluated data (optimistic, opt-in)")
+    ap.add_argument("--no-all-methods", action="store_true", help="skip the final all-methods comparison (tables + curves)")
     ap.add_argument("--no-per-subset", action="store_true", help="skip the per-site and per-video reports (faster)")
     ap.add_argument("--no-match-sheets", action="store_true", help="skip the per-object top-10 match images (faster)")
     ap.add_argument("--match-topk", type=int, default=10)
@@ -73,20 +74,26 @@ def main(argv=None):
     else:
         chosen = a.modes[0]
     v = read_json(a.split)["version"]
-    thr_modes = [x[4:] for x in a.variants if x.startswith("thr-")]
+    thr_modes = [x[4:] for x in a.variants if x.startswith("thr-")] + [x for x in a.variants if x.startswith("site-gallery")]
     if thr_modes:
         print(f"[4/4] evaluating {a.model}__{chosen} (threshold per unit: {', '.join(thr_modes)})", file=sys.stderr)
         evaluate.main(["--templates", str(template_dir(a.templates, a.model, chosen)), "--bins", a.bins, *common, "--thr-mode", *thr_modes,
                       "--site-queries", str(a.site_queries), "--match-topk", str(a.match_topk)]
                       + (["--no-per-subset"] if a.no_per_subset else []))
-    for variant in [x for x in a.variants if not x.startswith("thr-")]:
+    for variant in [x for x in a.variants if x in ("full", "plain")]:
         print(f"[4/4] evaluating {a.model}__{chosen} ({variant})", file=sys.stderr)
         evaluate.main(["--templates", str(template_dir(a.templates, a.model, chosen)), "--bins", a.bins, *common]
                       + (["--plain"] if variant == "plain" else []) + (["--no-per-subset"] if a.no_per_subset else [])
                       + (["--no-match-sheets"] if a.no_match_sheets else []) + ["--match-topk", str(a.match_topk)])
+    model_dir = Path(a.out) / f"{a.model}__{chosen}"
+    if not a.no_all_methods:
+        print("[all methods] building the comparison of every evaluation method", file=sys.stderr)
+        evaluate.main(["--all-methods", str(model_dir), "--split-version", v])
     print("\nDONE. Reports:")
     for variant in a.variants:
         print("  ", Path(a.out) / f"{a.model}__{chosen}" / (v + ("" if variant == "full" else "__plain" if variant == "plain" else "__" + variant)) / "report.md")
+    if not a.no_all_methods:
+        print("  ", model_dir / f"{v}__all_methods" / "report.md", " <- all methods side by side (site averages, curves)")
     return 0
 
 

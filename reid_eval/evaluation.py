@@ -206,7 +206,7 @@ def _spread(df):
 
 
 def write_results(out, bins: Bins, thresholds, val_paths, test_paths, data_root=None, kind="full", per_subset=True, verbose=True,
-                  check_thresholds=True, extra=None, title=None):
+                  check_thresholds=True, extra=None, title=None, subsets=("site", "video")):
     """Everything except the encoding: reads only accumulators, thresholds and bins (reproducible from saved files)."""
     from .report import build_report_from_dir
     out = Path(out)
@@ -228,10 +228,12 @@ def write_results(out, bins: Bins, thresholds, val_paths, test_paths, data_root=
     agg.per_object().to_csv(out / "per_object.csv", index=False)
 
     # ---- the same figures/tables for every site and every video
-    if per_subset:
+    do_site, do_video = per_subset and "site" in subsets, per_subset and "video" in subsets
+    if do_site:
         used = set()
         site_dirs = {site: _slug(site, used) for site in ps["site"]}
         ps["report"] = [f"per_site/{site_dirs[s]}/report.md" for s in ps["site"]]
+    if do_video:
         used = set()
         vid_dirs = {v: _slug(v, used) for v in pv["video_id"]}
         pv["report"] = [f"per_video/{vid_dirs[v]}/report.md" for v in pv["video_id"]]
@@ -240,7 +242,7 @@ def write_results(out, bins: Bins, thresholds, val_paths, test_paths, data_root=
     _spread(pv).to_csv(out / "per_video_stats.csv")
     if len(ps) >= 2:
         _spread(ps).to_csv(out / "per_site_stats.csv")
-    if per_subset:
+    if do_site:
         for site, d in site_dirs.items():
             sub = [x for x in test_s if x.site == site]
             sd = out / "per_site" / d
@@ -249,6 +251,7 @@ def write_results(out, bins: Bins, thresholds, val_paths, test_paths, data_root=
                          {"site": site, "short_title": f"site {site}", **(extra or {}),
                           "site_matches": f"../../site_matches/{sm.parent.name}/index.md" if sm.exists() else None})
             build_report_from_dir(sd, data_root)
+    if do_video:
         for x in test_s:
             vd = out / "per_video" / vid_dirs[x.video_id]
             mdir = out / "matches" / _slug(x.video_id, set())
@@ -445,4 +448,134 @@ def run_threshold_modes(template_dir, split_path, data_root, bins_path, out_base
         out_dirs[mode] = out
     from .report import write_variant_comparison
     write_variant_comparison(Path(out_base) / f"{manifest['model_name']}__{manifest['preproc_mode']}", split["version"])
+    return out_dirs
+
+
+# ----------------------------------------------------------------------------- site matching (gallery = the whole site)
+GALLERY_PROTOCOLS = {
+    "site-gallery": ("SITE MATCHING with a HELD-OUT threshold per site: every crop of every test video of a site is matched with every other "
+                     "crop of the site (the gallery is the whole site, so an object is also matched with the objects of the site's OTHER videos). "
+                     "Positives = same tracklet. Every other pair is a negative, INCLUDING cross-video pairs, whose identity is unknown: this assumes "
+                     "that no vehicle reappears in two videos of a site (if one does, FAR is overstated). The site's objects are split in two folds; "
+                     "each fold is evaluated with the threshold set on the negative pairs of the OTHER fold (pairs across folds are not evaluated). "
+                     "Sites with fewer than 4 objects are skipped. The units of this evaluation are SITES."),
+    "site-gallery-oracle": ("SITE MATCHING (gallery = the whole site, cross-video pairs assumed negative) with an ORACLE threshold per site, set on "
+                            "all negative pairs of the site including the evaluated ones: FAR is forced to the target and the numbers are OPTIMISTIC. "
+                            "Reference only. The units of this evaluation are SITES."),
+}
+THR_PROTOCOLS.update(GALLERY_PROTOCOLS)
+
+
+def run_site_gallery(template_dir, split_path, data_root, bins_path, out_base, modes=("site-gallery",), device=None, verbose=True,
+                     per_subset=True, seed=0):
+    """Evaluation where, for each site, ALL crops of ALL the site's test videos form one gallery (see GALLERY_PROTOCOLS).
+
+    Plain kind (no pose criteria: positions / azimuths of different videos are not comparable). The site is handled as one big
+    pseudo-video, so the whole accumulation machinery is reused. Returns {mode: results folder}.
+    """
+    from types import SimpleNamespace
+    for m in modes:
+        if m not in GALLERY_PROTOCOLS:
+            raise ValueError(f"unknown site-gallery mode {m!r}; one of {sorted(GALLERY_PROTOCOLS)}")
+    tdir = Path(template_dir)
+    manifest = read_json(tdir / "manifest.json")
+    split = read_json(split_path)
+    if manifest["split_sha256"] != sha256_file(split_path):
+        raise ValueError(f"templates were extracted with a different split file than {split_path}")
+    bins = Bins.load(bins_path)
+    test_ids = list(split["test"])
+    records, infos = load_dataset_with_info(data_root, sorted(test_ids), verbose=verbose)
+    by_video = group_by_video(records)
+    check_fingerprints(split, by_video, ("test",))
+    sites = {}
+    for v in test_ids:
+        sites.setdefault(infos[v].site or "unknown", []).append(v)
+
+    def load_site(vids):
+        vids = sorted(vids)
+        embs = [load_video(tdir, "test", v, by_video[v])[0] for v in vids]
+        recs = [r for v in vids for r in by_video[v]]
+        return np.concatenate(embs), recs, VideoMeta.from_records(recs).neutral()
+
+    # ---- pass 1: negative histograms of each site (all pairs; and of each fold of its objects)
+    own, folds, fold_neg = {}, {}, {}
+    for site, vids in sorted(sites.items()):
+        emb, recs, meta = load_site(vids)
+        own[site] = fine_histograms(emb, meta, device)[1]
+        T = len(meta.tracklet_ids)
+        if "site-gallery" in modes and T >= 4:
+            folds[site] = assign_folds(f"site::{site}", T, seed)
+            fold_neg[site] = [fine_histograms_subset(emb, meta, folds[site] == k, device)[1] for k in (0, 1)]
+        if verbose:
+            print(f"[site gallery] {site}: {len(vids)} videos, {T} objects, {len(recs)} crops, {int(own[site].sum()):,} negative pairs",
+                  file=sys.stderr)
+
+    out_dirs = {}
+    for mode in modes:
+        units, rows = {}, []
+        for site in sorted(sites):
+            skip = table = None
+            n_cal = []
+            if mode == "site-gallery":
+                if site not in folds:
+                    skip = "fewer than 4 objects: cannot split into two folds"
+                else:
+                    hists = [fold_neg[site][1 - f] for f in (0, 1)]
+                    if min(h.sum() for h in hists) == 0:
+                        skip = "a fold has no negative pairs"
+                    else:
+                        table, n_cal = [_thr_row(h, bins) for h in hists], [int(h.sum()) for h in hists]
+            else:
+                if own[site].sum() == 0:
+                    skip = "no negative pairs (a single object)"
+                else:
+                    table, n_cal = [_thr_row(own[site], bins)], [int(own[site].sum())]
+            if skip:
+                rows.append({"unit": site, "site": site, "fold": "", "status": f"skipped: {skip}", "n_calibration_negatives": 0,
+                             **{f"thr_{n}": np.nan for n in bins.op_names}})
+                continue
+            units[site] = (np.asarray(table), folds[site] if mode == "site-gallery" else None)
+            for f, (row, n) in enumerate(zip(table, n_cal)):
+                rows.append({"unit": site, "site": site, "fold": f if mode == "site-gallery" else "", "status": "used",
+                             "n_calibration_negatives": n, **{f"thr_{nm}": v for nm, v in zip(bins.op_names, row)}})
+        used = [r for r in rows if r["status"] == "used"]
+        if not units:
+            print(f"WARNING: [{mode}] no site can be evaluated with this protocol; variant skipped", file=sys.stderr)
+            continue
+        out = Path(out_base) / f"{manifest['model_name']}__{manifest['preproc_mode']}" / f"{split['version']}__{mode}"
+        out.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(rows).to_csv(out / "thresholds_per_unit.csv", index=False)
+        med = {nm: float(np.median([r[f"thr_{nm}"] for r in used])) for nm in bins.op_names}
+        thresholds = {"source": "test sites (held out)" if mode == "site-gallery" else "test sites (ORACLE)", "mode": mode,
+                      "protocol": GALLERY_PROTOCOLS[mode], "far_targets": bins.far_targets, "fixed_thresholds": bins.fixed_thresholds,
+                      "names": bins.op_names, "thresholds": [med[nm] for nm in bins.op_names],
+                      "thresholds_note": "median over sites; every site has its own thresholds (thresholds_per_unit.csv)",
+                      "n_units_used": len({r["unit"] for r in used}), "units_skipped": [r for r in rows if r["status"] != "used"],
+                      "n_calibration_negatives_median": float(np.median([r["n_calibration_negatives"] for r in used])),
+                      "split_version": split["version"], "split_sha256": manifest["split_sha256"], "bins_version": bins.version,
+                      "bins_sha256": bins.sha256, "model_name": manifest["model_name"], "preproc_mode": manifest["preproc_mode"],
+                      "kind": "plain", "unit": "site"}
+        write_json_atomic(out / "thresholds.json", thresholds)
+        # ---- pass 2: count at each site's thresholds
+        test_paths = []
+        for k, (site, (table, fold)) in enumerate(units.items()):
+            emb, recs, meta = load_site(sites[site])
+            if fold is not None:
+                meta = meta.with_folds(fold)
+            acc = accumulate_video(emb, meta, bins, table, device, fail_pos_all=True)
+            acc = _finish_acc(acc, recs, meta, SimpleNamespace(site=site, pov=None), site, "test")
+            test_paths.append(_save_acc(acc, out / "acc" / "test" / f"{_slug(site, set())}.npz"))
+            if verbose:
+                print(f"[acc {mode}] {k + 1}/{len(units)} {site}: {meta.n} crops, {int(acc['hist'].sum()):,} pairs", file=sys.stderr)
+        write_json_atomic(out / "run.json", {"template_dir": str(tdir), "manifest": manifest, "split_file": str(split_path), "kind": "plain",
+                                             "threshold_mode": mode, "data_root": str(data_root), "bins_file": str(bins_path),
+                                             "bins_sha256": bins.sha256})
+        extra = {"threshold_protocol": GALLERY_PROTOCOLS[mode], "threshold_mode": mode, "threshold_units_used": thresholds["n_units_used"],
+                 "threshold_units_skipped": thresholds["units_skipped"], "oracle": "oracle" in mode, "unit": "site",
+                 "n_calibration_negatives_median": thresholds["n_calibration_negatives_median"]}
+        model = f"{manifest['model_name']} / {manifest['preproc_mode']}"
+        write_results(out, bins, thresholds, [], test_paths, data_root, kind="plain", per_subset=per_subset, verbose=verbose,
+                      check_thresholds=False, extra=extra, subsets=("site",),
+                      title=f"Site matching (gallery = whole site), threshold per site {'(ORACLE, optimistic)' if 'oracle' in mode else '(held out)'}: {model}")
+        out_dirs[mode] = out
     return out_dirs
